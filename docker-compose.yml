@@ -1,0 +1,22 @@
+# 正式環境參考組態:應用 + PostgreSQL
+# 注意:換用 PostgreSQL 前,需依 src/server/db/schema.ts 檔頭指引將 schema 轉為 pg-core
+services:
+  app:
+    build: .
+    ports: ["3000:3000"]
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - ALLOWED_EMAIL_DOMAINS=g.nccu.edu.tw,nccu.edu.tw
+    depends_on: [db]
+    restart: unless-stopped
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=research_match
+      - POSTGRES_USER=app
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    restart: unless-stopped
+volumes:
+  pgdata:
