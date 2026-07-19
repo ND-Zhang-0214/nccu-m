@@ -1,5 +1,5 @@
 {
-  "_說明": "政大學院/系所結構初版。學院與系所名稱依公開資訊整理,正式上線前請依政大官網逐一校正;領域(fields)與子領域(subfields)目前僅英國語文學系有完整示範,其餘系所留空待各系補充。此檔案為唯一資料來源,修改後執行 npm run db:reset 重建。",
+  "_說明": "政大學院/系所結構。依政大官方「教學單位」頁面與其附表(單位層級及學制班別)校正,涵蓋 12 學院 + 國際金融學院(國家重點領域研究學院)。歸併規則:與母系所同名之碩士在職專班(如中文系國文教學專班、地政學系專班、英文系英語教學專班、外交學系戰略與國際事務專班、資訊科學系專班、圖檔所數位專班)不另列,教授選母系所即可;具獨立名稱、無同名母體的學程與專班則單獨列出。領域(fields)與子領域(subfields)目前僅英國語文學系有完整示範,其餘系所留空待各系補充。此檔案為唯一資料來源,修改後執行 npm run db:reset 重建。標有 _待確認 的項目為官方資料版本間存在落差,正式使用前請再核對政大官網。",
   "colleges": [
     {
       "name": "文學院", "slug": "liberal-arts",
@@ -8,18 +8,10 @@
         { "name": "歷史學系", "slug": "history" },
         { "name": "哲學系", "slug": "philosophy" },
         { "name": "圖書資訊與檔案學研究所", "slug": "lias" },
-        { "name": "臺灣文學研究所", "slug": "taiwanlit" },
         { "name": "宗教研究所", "slug": "religion" },
-        { "name": "臺灣史研究所", "slug": "taiwanhistory" }
-      ]
-    },
-    {
-      "name": "理學院", "slug": "science",
-      "departments": [
-        { "name": "應用數學系", "slug": "math" },
-        { "name": "心理學系", "slug": "psychology" },
-        { "name": "資訊科學系(理學院時期)", "slug": "cs-legacy", "_註": "資科系現屬資訊學院,此列僅示範,校正時請刪除" },
-        { "name": "神經科學研究所", "slug": "neuroscience" }
+        { "name": "臺灣史研究所", "slug": "taiwanhistory" },
+        { "name": "臺灣文學研究所", "slug": "taiwanlit" },
+        { "name": "華語文教學碩博士學位學程", "slug": "huayu-teaching" }
       ]
     },
     {
@@ -32,16 +24,13 @@
         { "name": "地政學系", "slug": "land-economics" },
         { "name": "經濟學系", "slug": "economics" },
         { "name": "民族學系", "slug": "ethnology" },
-        { "name": "勞工研究所", "slug": "labor" },
         { "name": "國家發展研究所", "slug": "national-dev" },
-        { "name": "社會工作研究所", "slug": "social-work" }
-      ]
-    },
-    {
-      "name": "法學院", "slug": "law",
-      "departments": [
-        { "name": "法律學系", "slug": "law" },
-        { "name": "法律科際整合研究所", "slug": "law-interdisciplinary" }
+        { "name": "勞工研究所", "slug": "labor" },
+        { "name": "社會工作研究所", "slug": "social-work" },
+        { "name": "亞太研究英語碩士學位學程", "slug": "appe-master" },
+        { "name": "亞太研究英語博士學位學程", "slug": "appe-phd" },
+        { "name": "應用經濟與社會發展英語碩士學位學程", "slug": "aesd-master" },
+        { "name": "行政管理碩士學程", "slug": "padm-inservice" }
       ]
     },
     {
@@ -52,10 +41,26 @@
         { "name": "會計學系", "slug": "accounting" },
         { "name": "統計學系", "slug": "statistics" },
         { "name": "企業管理學系", "slug": "business-admin" },
+        { "name": "企業管理研究所(MBA學位學程)", "slug": "mba" },
         { "name": "資訊管理學系", "slug": "mis" },
         { "name": "財務管理學系", "slug": "finance" },
         { "name": "風險管理與保險學系", "slug": "rmi" },
-        { "name": "科技管理與智慧財產研究所", "slug": "tiim" }
+        { "name": "科技管理與智慧財產研究所", "slug": "tiim" },
+        { "name": "國際經營管理英語碩士學位學程", "slug": "imba" },
+        { "name": "經營管理碩士學程(EMBA)", "slug": "emba" }
+      ]
+    },
+    {
+      "name": "傳播學院", "slug": "communication",
+      "departments": [
+        { "name": "新聞學系", "slug": "journalism" },
+        { "name": "廣告學系", "slug": "advertising" },
+        { "name": "廣播電視學系", "slug": "radio-tv" },
+        { "name": "傳播學院大一大二不分系", "slug": "comm-freshman" },
+        { "name": "傳播學院傳播學士學位學程", "slug": "comm-bachelor" },
+        { "name": "傳播學院傳播碩士學位學程", "slug": "comm-master" },
+        { "name": "國際傳播英語碩士學位學程", "slug": "icc-english" },
+        { "name": "數位內容碩士學位學程", "slug": "digital-content" }
       ]
     },
     {
@@ -85,16 +90,25 @@
         { "name": "土耳其語文學系", "slug": "turkish" },
         { "name": "歐洲語文學系", "slug": "european" },
         { "name": "東南亞語言與文化學士學位學程", "slug": "seasia" },
-        { "name": "語言學研究所", "slug": "linguistics" }
+        { "name": "語言學研究所", "slug": "linguistics" },
+        { "name": "中東與中亞研究碩士學位學程", "slug": "middle-east" }
       ]
     },
     {
-      "name": "傳播學院", "slug": "communication",
+      "name": "法學院", "slug": "law",
       "departments": [
-        { "name": "新聞學系", "slug": "journalism" },
-        { "name": "廣告學系", "slug": "advertising" },
-        { "name": "廣播電視學系", "slug": "radio-tv" },
-        { "name": "傳播學院傳播碩士學位學程", "slug": "comm-master" }
+        { "name": "法律學系", "slug": "law" },
+        { "name": "法律科際整合研究所", "slug": "law-interdisciplinary" }
+      ]
+    },
+    {
+      "name": "理學院", "slug": "science",
+      "departments": [
+        { "name": "應用數學系", "slug": "math" },
+        { "name": "心理學系", "slug": "psychology" },
+        { "name": "神經科學研究所", "slug": "neuroscience" },
+        { "name": "應用物理研究所", "slug": "applied-physics" },
+        { "name": "電子物理學士學位學程", "slug": "electronic-physics" }
       ]
     },
     {
@@ -103,7 +117,8 @@
         { "name": "外交學系", "slug": "diplomacy" },
         { "name": "東亞研究所", "slug": "east-asia" },
         { "name": "俄羅斯研究所", "slug": "russia" },
-        { "name": "日本研究學位學程", "slug": "japan-studies" },
+        { "name": "日本研究碩博士學位學程", "slug": "japan-studies" },
+        { "name": "國際研究英語碩士學位學程", "slug": "ir-english" },
         { "name": "國家安全與大陸研究碩士在職專班", "slug": "national-security" }
       ]
     },
@@ -119,21 +134,29 @@
     {
       "name": "創新國際學院", "slug": "ici",
       "departments": [
-        { "name": "創新國際學院學士學位學程", "slug": "ici-bachelor" }
+        { "name": "創新國際學院學士班", "slug": "ici-bachelor" },
+        { "name": "全球傳播與創新科技碩士學位學程", "slug": "gcit" }
       ]
     },
     {
       "name": "資訊學院", "slug": "informatics",
       "departments": [
         { "name": "資訊科學系", "slug": "computer-science" },
-        { "name": "數位內容碩士學位學程", "slug": "digital-content" },
+        { "name": "數位內容與科技學士學位學程", "slug": "digital-tech-bachelor" },
+        { "name": "人工智慧應用學士學位學程", "slug": "ai-application" },
         { "name": "社群網路與人智計算國際研究生博士學位學程", "slug": "tiger" }
+      ]
+    },
+    {
+      "name": "X 實驗學院", "slug": "x-college",
+      "departments": [
+        { "name": "運動產業與文化學士學位學程", "slug": "sports-culture", "_待確認": "官方附表標示為不分院,現行歸屬建議發送前再確認" }
       ]
     },
     {
       "name": "國際金融學院", "slug": "international-finance",
       "departments": [
-        { "name": "全球金融碩士學位學程", "slug": "global-finance" }
+        { "name": "國際金融碩士學位學程", "slug": "global-finance", "_待確認": "官方附表 PDF 未涵蓋此國家重點領域研究學院,學程正式名稱建議發送前再核對官網" }
       ]
     }
   ],
