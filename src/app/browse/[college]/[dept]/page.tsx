@@ -37,16 +37,23 @@ export default async function DeptPage({ params }: { params: { college: string; 
       {data.professors.length === 0 ? (
         <p className="lede">尚無教授建檔。</p>
       ) : (
-        <ul className="catalog">
+        <div className="card-grid">
           {data.professors.map((p) => (
-            <li key={p.id}>
-              <Link href={`/professors/${p.id}`}>
-                <span>{p.displayName}</span>
-                <span className="count">{p.title}</span>
-              </Link>
-            </li>
+            <Link className="mini-card" href={`/professors/${p.id}`} key={p.id}>
+              <div className="mini-card-top">
+                <span className="mini-avatar">{p.displayName.slice(0, 1)}</span>
+                <div>
+                  <div className="mini-card-name">{p.displayName}</div>
+                  <div className="mini-card-meta">{p.title}</div>
+                </div>
+              </div>
+              <div className="mini-card-meta">
+                <span className={`status-dot ${p.isOpen ? "open" : ""}`} />
+                {p.isOpen ? "開放媒合" : "暫停媒合"}
+              </div>
+            </Link>
           ))}
-        </ul>
+        </div>
       )}
     </>
   );

@@ -10,6 +10,7 @@ export default async function PostingPage({ params }: { params: { id: string } }
   const posting = await getPosting(params.id);
   if (!posting) notFound();
   const user = await currentUser();
+  const isOwner = !!user && (posting.professor.userId === user.id || user.role === "ADMIN");
   return (
     <>
       <nav className="crumbs">
@@ -23,6 +24,12 @@ export default async function PostingPage({ params }: { params: { id: string } }
         ・{posting.professor.title}
       </p>
       <p style={{ whiteSpace: "pre-wrap" }}>{posting.description}</p>
+
+      {isOwner && (
+        <div className="notice ok">
+          你是這則需求的發布者。<Link href={`/postings/${posting.id}/applications`}>查看並排比較所有申請 →</Link>
+        </div>
+      )}
 
       <h2>提出申請</h2>
       {user ? (

@@ -22,6 +22,24 @@ export async function getProfessor(id: string) {
   return { prof, dept, college, specialties, openPostings };
 }
 
+export async function getProfessorByUserId(userId: string) {
+  const [prof] = await db.select().from(t.professorProfiles).where(eq(t.professorProfiles.userId, userId));
+  return prof ?? null;
+}
+
+// 新手引導清單用:回報教授檔案的完成度(檔案簡介/研究專長/已發布需求)
+export async function getProfessorOnboarding(professorId: string) {
+  const [prof] = await db.select().from(t.professorProfiles).where(eq(t.professorProfiles.id, professorId));
+  const specialties = await db.select().from(t.professorSpecialties)
+    .where(eq(t.professorSpecialties.professorId, professorId));
+  const postings = await db.select().from(t.postings).where(eq(t.postings.professorId, professorId));
+  return {
+    hasBio: !!prof?.bio,
+    hasSpecialties: specialties.length > 0,
+    hasPosting: postings.length > 0,
+  };
+}
+
 export async function listPendingProfessors() {
   return db.select().from(t.professorProfiles).where(eq(t.professorProfiles.verifyStatus, "PENDING"));
 }

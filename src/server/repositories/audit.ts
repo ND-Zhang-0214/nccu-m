@@ -17,3 +17,15 @@ export async function listOpenReports() {
 export async function resolveReport(id: string, status: "resolved" | "dismissed", outcome: string) {
   await db.update(t.reports).set({ status, outcome }).where(eq(t.reports.id, id));
 }
+
+export async function getReport(id: string) {
+  const [row] = await db.select().from(t.reports).where(eq(t.reports.id, id));
+  return row ?? null;
+}
+
+// 「我的檢舉」進度追蹤用
+export async function listReportsByUser(reporterId: string) {
+  return db.select().from(t.reports)
+    .where(eq(t.reports.reporterId, reporterId))
+    .orderBy(desc(t.reports.createdAt));
+}

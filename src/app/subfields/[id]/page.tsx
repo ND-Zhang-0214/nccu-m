@@ -26,16 +26,23 @@ export default async function SubfieldPage({ params }: { params: { id: string } 
       {data.professors.length === 0 ? (
         <div className="notice">此子領域尚無教授建檔。</div>
       ) : (
-        data.professors.map((p) => (
-          <article className="prof-card" key={p.id}>
-            <h3>
-              <Link href={`/professors/${p.id}`}>{p.displayName}</Link>
-              {p.isOpen && <span className="badge open">開放媒合</span>}
-            </h3>
-            <div className="meta">{p.title}</div>
-            {p.bio && <p>{p.bio}</p>}
-          </article>
-        ))
+        <div className="card-grid">
+          {data.professors.map((p) => (
+            <Link className="mini-card" href={`/professors/${p.id}`} key={p.id}>
+              <div className="mini-card-top">
+                <span className="mini-avatar">{p.displayName.slice(0, 1)}</span>
+                <div>
+                  <div className="mini-card-name">{p.displayName}</div>
+                  <div className="mini-card-meta">{p.title}</div>
+                </div>
+              </div>
+              <div className="mini-card-meta">
+                <span className={`status-dot ${p.isOpen ? "open" : ""}`} />
+                {p.isOpen ? "開放媒合" : "暫停媒合"}
+              </div>
+            </Link>
+          ))}
+        </div>
       )}
     </>
   );

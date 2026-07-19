@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { listColleges } from "@/server/repositories/taxonomy";
-import { listOpenPostings, CATEGORIES } from "@/server/repositories/postings";
+import { listOpenPostings, listFeaturedPostings, CATEGORIES } from "@/server/repositories/postings";
 
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
   const [colleges, postings] = await Promise.all([listColleges(), listOpenPostings()]);
+  const latest = postings.slice(0, 3);
+  const featured = await listFeaturedPostings(latest.map((p) => p.id), 4);
+
   return (
     <>
       <h1>把研究需求與人才,放進同一份目錄</h1>
@@ -19,7 +22,7 @@ export default async function Home() {
 
       <h2>最新開放需求</h2>
       <ul className="catalog">
-        {postings.slice(0, 5).map((p) => (
+        {latest.map((p) => (
           <li key={p.id}>
             <Link href={`/postings/${p.id}`}>
               <span>{p.title}</span>
@@ -29,6 +32,25 @@ export default async function Home() {
           </li>
         ))}
       </ul>
+
+      {featured.length > 0 && (
+        <>
+          <h2>為你精選</h2>
+          <p className="lede" style={{ marginTop: -4, fontSize: 13.5 }}>
+            目前為輪替版:依最新開放需求取樣,尚未依個人興趣客製化(需要先累積瀏覽紀錄才能做到)。
+          </p>
+          <div className="featured-strip">
+            {featured.map((p) => (
+              <Link className="mini-card" href={`/postings/${p.id}`} key={p.id}>
+                <div className="mini-card-name">{p.title}</div>
+                <div className="mini-card-meta">
+                  <span className="badge cat">{CATEGORIES[p.category]}</span> {p.professor.displayName}
+                </div>
+              </Link>
+            ))}
+          </div>
+        </>
+      )}
     </>
   );
 }

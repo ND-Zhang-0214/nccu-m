@@ -1,32 +1,15 @@
-import Link from "next/link";
-import { listOpenPostings, CATEGORIES } from "@/server/repositories/postings";
+import { listOpenPostings } from "@/server/repositories/postings";
+import { PostingsFilter } from "./postings-filter";
 
 export const dynamic = "force-dynamic";
 
-export default async function Postings({ searchParams }: { searchParams: { cat?: string } }) {
-  const cat = searchParams.cat && CATEGORIES[searchParams.cat] ? searchParams.cat : undefined;
-  const postings = await listOpenPostings(cat);
+export default async function Postings() {
+  const postings = await listOpenPostings();
   return (
     <>
       <h1>開放需求</h1>
-      <div className="chiprow">
-        <Link className="chip" href="/postings">全部</Link>
-        {Object.entries(CATEGORIES).map(([k, v]) => (
-          <Link key={k} className="chip" href={`/postings?cat=${k}`}>{v}</Link>
-        ))}
-      </div>
-      <ul className="catalog" style={{ marginTop: 24 }}>
-        {postings.map((p) => (
-          <li key={p.id}>
-            <Link href={`/postings/${p.id}`}>
-              <span>{p.title}</span>
-              <span className="badge cat">{CATEGORIES[p.category]}</span>
-              <span className="count">{p.professor.displayName}</span>
-            </Link>
-          </li>
-        ))}
-        {postings.length === 0 && <li><span className="row">此分類目前沒有開放需求。</span></li>}
-      </ul>
+      <p className="lede">點選分類即時套用篩選,不需要重新載入頁面。</p>
+      <PostingsFilter postings={postings} />
     </>
   );
 }

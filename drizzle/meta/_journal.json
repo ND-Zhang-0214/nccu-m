@@ -8,6 +8,13 @@
       "when": 1784391662862,
       "tag": "0000_lucky_mimic",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784461103026,
+      "tag": "0001_free_randall",
+      "breakpoints": true
     }
   ]
 }

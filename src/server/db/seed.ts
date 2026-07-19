@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { eq } from "drizzle-orm";
 import { db } from "./client";
 import * as t from "./schema";
 
@@ -53,6 +54,9 @@ async function main() {
   }
 
   console.log("→ 建立示範需求與管理員帳號 …");
+  const allProfs = await db.select().from(t.professorProfiles);
+  const p2 = allProfs[1]?.id ?? firstProfId;
+  const p3 = allProfs[2]?.id ?? firstProfId;
   await db.insert(t.postings).values([
     {
       professorId: firstProfId, category: "UR",
@@ -64,6 +68,21 @@ async function main() {
       title: "【示範】語言學概論 課程助教",
       description: "此為示範資料。需批改作業並主持每週討論課。",
     },
+    {
+      professorId: p2, category: "REC",
+      title: "【示範】推薦信申請窗口:語言學研究所方向",
+      description: "此為示範資料。申請國內外語言學研究所推薦信,請附目標學校與截止日。",
+    },
+    {
+      professorId: p3, category: "DEPT",
+      title: "【示範】系辦短期:國際研討會接待支援",
+      description: "此為示範資料。研討會期間協助報到與接待,每日彈性排班。",
+    },
+    {
+      professorId: p2, category: "IND",
+      title: "【示範】產學跨域:語音技術使用者研究",
+      description: "此為示範資料。與業界合作之語音介面易用性研究,需簽保密承諾。",
+    },
   ]);
 
   await db.insert(t.users).values({
@@ -72,6 +91,18 @@ async function main() {
     role: "ADMIN",
     subRoles: JSON.stringify(["ADMIN"]),
   });
+
+  // 示範教授帳號:將第一位示範教授連結到一個真實使用者帳號,
+  // 供測試教授儀表板 / 身分視角切換 / 並排比較申請等功能使用。
+  const [profUser] = await db.insert(t.users).values({
+    email: "professor.demo@nccu.edu.tw",
+    displayName: "示範教授本人帳號",
+    role: "PROFESSOR",
+    subRoles: JSON.stringify(["PROFESSOR"]),
+  }).returning();
+  await db.update(t.professorProfiles)
+    .set({ userId: profUser.id, verifyStatus: "APPROVED" })
+    .where(eq(t.professorProfiles.id, firstProfId));
 
   console.log("✓ 種子資料建立完成");
 }

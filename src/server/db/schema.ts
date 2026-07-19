@@ -149,6 +149,19 @@ export const reports = sqliteTable("reports", {
   createdAt: now("created_at"),
 }, (t) => ({ statusIdx: index("r_status").on(t.status, t.createdAt) }));
 
+// ── 通知(供「檢舉/申請結果中性通知」「進度可視化」使用)──────
+
+export const notifications = sqliteTable("notifications", {
+  id: id(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  type: text("type").notNull(), // application.status | report.resolved | report.filed_against_you | professor.verified
+  title: text("title").notNull(),
+  body: text("body").notNull().default(""),
+  link: text("link").notNull().default(""),
+  isRead: integer("is_read", { mode: "boolean" }).notNull().default(false),
+  createdAt: now("created_at"),
+}, (t) => ({ userIdx: index("n_user").on(t.userId, t.isRead) }));
+
 export const auditLogs = sqliteTable("audit_logs", {
   id: id(),
   actorId: text("actor_id").references(() => users.id),
