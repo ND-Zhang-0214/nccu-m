@@ -75,6 +75,12 @@ export async function listMyApplications(applicantId: string) {
 }
 
 // 教授儀表板用:自己發布的全部需求(含關閉的)
+export async function getMyApplicationForPosting(postingId: string, applicantId: string) {
+  const [row] = await db.select().from(t.applications)
+    .where(and(eq(t.applications.postingId, postingId), eq(t.applications.applicantId, applicantId)));
+  return row ?? null;
+}
+
 export async function listPostingsByProfessor(professorId: string) {
   return db.select().from(t.postings)
     .where(eq(t.postings.professorId, professorId))

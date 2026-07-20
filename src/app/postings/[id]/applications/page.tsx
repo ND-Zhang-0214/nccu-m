@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getPosting, listApplicationsForPosting, CATEGORIES } from "@/server/repositories/postings";
 import { currentUser } from "@/server/auth";
-import { updateApplicationStatusAction } from "@/app/actions";
+import { updateApplicationStatusAction, startConversationAction } from "@/app/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -58,6 +58,10 @@ export default async function ApplicationsComparePage({ params }: { params: { id
                 {!extra.background && <div className="field">{a.motivation}</div>}
 
                 <div className="compare-actions">
+                  <form action={startConversationAction}>
+                    <input type="hidden" name="applicationId" value={a.id} />
+                    <button className="secondary">開始對話</button>
+                  </form>
                   <form action={updateApplicationStatusAction}>
                     <input type="hidden" name="applicationId" value={a.id} />
                     <input type="hidden" name="status" value="interview_invited" />

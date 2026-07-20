@@ -231,7 +231,58 @@ export const humanChecks = sqliteTable("human_checks", {
   createdAt: now("created_at"),
 }, (t) => ({ actorIdx: index("hc_actor").on(t.actorKey) }));
 
-// ── §2.5 管理員敏感調閱雙人核可 ──────────────────────────
+// ── 站內訊息(M4)+ 忙碌/有空狀態 + 分層揭露的站外聯絡方式(§3.2、§5.1)──
+
+export const conversations = sqliteTable("conversations", {
+  id: id(),
+  contextType: text("context_type").notNull(), // APPLICATION(依附申請)| DIRECT(教授間直接邀約)
+  contextId: text("context_id").notNull().default(""), // APPLICATION 時為 applications.id
+  // 媒合前每日新對話數有上限(架構書 M4);媒合確認後解除限制,且訊息才可能被要求
+  // 揭露聯絡方式。confirmedAt 為 null 代表尚未確認。
+  confirmedAt: integer("confirmed_at", { mode: "timestamp" }),
+  createdAt: now("created_at"),
+}, (t) => ({ contextIdx: index("conv_context").on(t.contextType, t.contextId) }));
+
+export const conversationMembers = sqliteTable("conversation_members", {
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // 忙碌/有空狀態:雙方各自手動設定,不做系統自動偵測的即時上下線(UX 決策已定案排除)
+  status: text("status").notNull().default("available"), // available | away
+  statusNote: text("status_note").notNull().default(""),
+  lastReadAt: integer("last_read_at", { mode: "timestamp" }),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.conversationId, t.userId] }),
+  userIdx: index("cm_user").on(t.userId),
+}));
+
+export const messages = sqliteTable("messages", {
+  id: id(),
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  senderId: text("sender_id").notNull().references(() => users.id),
+  body: text("body").notNull(),
+  createdAt: now("created_at"),
+}, (t) => ({ convTimeIdx: index("msg_conv_time").on(t.conversationId, t.createdAt) }));
+
+// 使用者自己維護的聯絡方式,值一律加密存放(§5.1,見 src/server/crypto.ts)
+export const userContacts = sqliteTable("user_contacts", {
+  id: id(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(), // LINE | WEBSITE | OTHER
+  valueEnc: text("value_enc").notNull(),
+  createdAt: now("created_at"),
+}, (t) => ({ userIdx: index("uc_user").on(t.userId) }));
+
+// 揭露事件本身即存證(架構書 §3.2「揭露留痕」):誰在哪個對話裡、對誰、揭露了什麼、何時。
+// valueEnc 為揭露當下的值之複本(加密),獨立於 userContacts,避免使用者事後改動原始
+// 聯絡方式導致歷史揭露紀錄跟著變動——存證要反映「揭露當下真正給出去的內容」。
+export const contactDisclosures = sqliteTable("contact_disclosures", {
+  id: id(),
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  discloserId: text("discloser_id").notNull().references(() => users.id),
+  kind: text("kind").notNull(),
+  valueEnc: text("value_enc").notNull(),
+  disclosedAt: now("disclosed_at"),
+}, (t) => ({ convIdx: index("cd_conv").on(t.conversationId) }));
 
 export const dualApprovals = sqliteTable("dual_approvals", {
   id: id(),

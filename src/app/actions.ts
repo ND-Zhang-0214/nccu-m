@@ -11,11 +11,16 @@ import { audit, createReport, resolveReport, getReport } from "@/server/reposito
 import { setProfessorVerify, getProfessor } from "@/server/repositories/professors";
 import { notify, markAllRead } from "@/server/repositories/notifications";
 import { setPersonaCookie, type Persona } from "@/server/persona";
-import { requireUser, requireAdmin, requireApplicationStatusEditor } from "@/server/authz";
+import { requireUser, requireAdmin, requireApplicationStatusEditor, requireConversationMember } from "@/server/authz";
 import {
   applySchema, reportSchema, applicationStatusSchema, reportDecisionSchema,
-  professorVerifySchema, personaSchema,
+  professorVerifySchema, personaSchema, sendMessageSchema, startConversationSchema,
+  setStatusSchema, addContactSchema, discloseContactSchema,
 } from "@/server/schemas";
+import {
+  getOrCreateConversationForApplication, confirmConversationByApplication, sendMessage,
+  setMemberStatus, setUserContact, deleteUserContact, discloseContact, ConversationLimitError,
+} from "@/server/repositories/messaging";
 import { logSecurityEvent } from "@/server/repositories/security";
 import { generateSecret, getOtpauthUrl, encryptSecret, verifyTotpCode } from "@/server/totp";
 import { totpVerifySchema } from "@/server/schemas";
@@ -154,6 +159,9 @@ export async function updateApplicationStatusAction(formData: FormData) {
   const { user, app, posting } = await requireApplicationStatusEditor(applicationId);
   await updateApplicationStatus(applicationId, status);
   await audit(user.id, "application.status.update", "APPLICATION", applicationId, { status });
+  if (status === "accepted") {
+    await confirmConversationByApplication(applicationId); // 媒合確認,解除訊息頻率上限
+  }
 
   const statusLabel: Record<string, string> = {
     interview_invited: "已邀請面試", interviewed: "已完成面試", accepted: "審核通過", rejected: "婉拒",
@@ -180,6 +188,101 @@ export async function markNotificationsReadAction() {
   const user = await requireUser();
   await markAllRead(user.id);
   revalidatePath("/notifications");
+}
+
+// ── 站內訊息系統(架構書 M4)────────────────────────────────
+
+export async function startConversationAction(formData: FormData) {
+  const user = await requireUser();
+  const parsed = startConversationSchema.safeParse({ applicationId: formData.get("applicationId") });
+  if (!parsed.success) redirect("/");
+
+  const { getApplication } = await import("@/server/repositories/postings");
+  const app = await getApplication(parsed.data.applicationId);
+  if (!app) redirect("/");
+
+  const posting = await getPosting(app.postingId);
+  if (!posting?.professor.userId) redirect("/");
+
+  // 只有申請人本人或該需求的教授本人(或管理員)可以開啟這個對話,不透過會 redirect 的守則做流程控制
+  const isApplicant = app.applicantId === user.id;
+  const isOwner = posting.professor.userId === user.id;
+  if (!isApplicant && !isOwner && user.role !== "ADMIN") {
+    await logSecurityEvent("authz.denied", "high", user.id, "", { resource: "CONVERSATION_START", applicationId: app.id });
+    redirect("/");
+  }
+
+  try {
+    const conv = await getOrCreateConversationForApplication(app.id, app.applicantId, posting.professor.userId);
+    await audit(user.id, "conversation.start", "CONVERSATION", conv.id);
+    redirect(`/messages/${conv.id}`);
+  } catch (e) {
+    if (e instanceof ConversationLimitError) {
+      redirect(`/postings/${app.postingId}?msgError=${encodeURIComponent(e.message)}`);
+    }
+    throw e;
+  }
+}
+
+export async function sendMessageAction(_prev: unknown, formData: FormData) {
+  const user = await currentUser();
+  if (!user) return { error: "請先登入。" };
+  const parsed = sendMessageSchema.safeParse({
+    conversationId: formData.get("conversationId"), body: formData.get("body"),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+
+  const { isConversationMember } = await import("@/server/repositories/messaging");
+  const isMember = await isConversationMember(parsed.data.conversationId, user.id);
+  if (!isMember) {
+    await logSecurityEvent("authz.denied", "high", user.id, "", { resource: "CONVERSATION_SEND", id: parsed.data.conversationId });
+    return { error: "無法發送。" };
+  }
+
+  await sendMessage(parsed.data.conversationId, user.id, parsed.data.body);
+  revalidatePath(`/messages/${parsed.data.conversationId}`);
+  return { ok: true };
+}
+
+export async function setStatusAction(formData: FormData) {
+  const parsed = setStatusSchema.safeParse({
+    conversationId: formData.get("conversationId"), status: formData.get("status"), note: formData.get("note") || "",
+  });
+  if (!parsed.success) return;
+  const user = await requireConversationMember(parsed.data.conversationId);
+  await setMemberStatus(parsed.data.conversationId, user.id, parsed.data.status, parsed.data.note);
+  revalidatePath(`/messages/${parsed.data.conversationId}`);
+}
+
+export async function addContactAction(_prev: unknown, formData: FormData) {
+  const user = await currentUser();
+  if (!user) return { error: "請先登入。" };
+  const parsed = addContactSchema.safeParse({ kind: formData.get("kind"), value: formData.get("value") });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  await setUserContact(user.id, parsed.data.kind, parsed.data.value);
+  await audit(user.id, "contact.add", "USER_CONTACT");
+  revalidatePath("/me/contacts");
+  return { ok: true };
+}
+
+export async function deleteContactAction(formData: FormData) {
+  const user = await requireUser();
+  const id = String(formData.get("id"));
+  await deleteUserContact(id, user.id);
+  await audit(user.id, "contact.delete", "USER_CONTACT", id);
+  revalidatePath("/me/contacts");
+}
+
+export async function discloseContactAction(formData: FormData) {
+  const parsed = discloseContactSchema.safeParse({
+    conversationId: formData.get("conversationId"), contactId: formData.get("contactId"),
+  });
+  if (!parsed.success) return;
+  const user = await requireConversationMember(parsed.data.conversationId);
+  await discloseContact(parsed.data.conversationId, user.id, parsed.data.contactId);
+  // §3.2 揭露留痕:此動作本身即是稽核事件,獨立於 contactDisclosures 存證表再記一筆業務稽核
+  await audit(user.id, "contact.disclose", "CONVERSATION", parsed.data.conversationId);
+  revalidatePath(`/messages/${parsed.data.conversationId}`);
 }
 
 // ── §2.5 管理員雙因素驗證(啟用 + 重驗)────────────────────

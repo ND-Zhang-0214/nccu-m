@@ -42,3 +42,23 @@ export const verifySchema = z.object({ email: z.string().email(), code: z.string
 
 // §2.5 管理員 2FA
 export const totpVerifySchema = z.object({ code: z.string().length(6) });
+
+// 站內訊息系統
+export const sendMessageSchema = z.object({
+  conversationId: z.string().min(1),
+  body: z.string().min(1, "訊息不可為空").max(2000),
+});
+export const startConversationSchema = z.object({ applicationId: z.string().min(1) });
+export const setStatusSchema = z.object({
+  conversationId: z.string().min(1),
+  status: z.enum(["available", "away"]),
+  note: z.string().max(100).default(""),
+});
+export const addContactSchema = z.object({
+  kind: z.enum(["LINE", "WEBSITE", "OTHER"]),
+  value: z.string().min(1).max(300),
+});
+export const discloseContactSchema = z.object({
+  conversationId: z.string().min(1),
+  contactId: z.string().min(1),
+});

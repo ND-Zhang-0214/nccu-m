@@ -104,3 +104,15 @@ export async function requireProfessorSelf(professorUserId: string | null) {
   }
   return user;
 }
+
+/** 對話只有成員本人可存取;非成員一律導回首頁,不透露對話是否存在(§2.2 延伸)。 */
+export async function requireConversationMember(conversationId: string) {
+  const user = await requireUser();
+  const { isConversationMember } = await import("@/server/repositories/messaging");
+  const ok = await isConversationMember(conversationId, user.id);
+  if (!ok) {
+    await logSecurityEvent("authz.denied", "high", user.id, "", { resource: "CONVERSATION", id: conversationId });
+    redirect("/messages");
+  }
+  return user;
+}
