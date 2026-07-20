@@ -3,7 +3,8 @@ import { notFound } from "next/navigation";
 import { getPosting, getMyApplicationForPosting, CATEGORIES } from "@/server/repositories/postings";
 import { currentUser } from "@/server/auth";
 import { guardAgainstScraping } from "@/server/anti-scrape";
-import { startConversationAction } from "@/app/actions";
+import { startConversationAction, bookSlotAction } from "@/app/actions";
+import { listOpenSlotsForPosting } from "@/server/repositories/interviews";
 import { ApplyForm, ReportForm } from "./apply-form";
 
 export const dynamic = "force-dynamic";
@@ -54,6 +55,31 @@ export default async function PostingPage({ params, searchParams }: { params: { 
           </form>
         </div>
       )}
+
+      {myApplication && (await (async () => {
+        const slots = await listOpenSlotsForPosting(posting.id);
+        if (slots.length === 0) return null;
+        return (
+          <>
+            <h2>預約面試時段</h2>
+            <p className="lede" style={{ fontSize: 13.5 }}>地點資訊將於預約後顯示。</p>
+            <ul className="catalog">
+              {slots.map((s) => (
+                <li key={s.id}>
+                  <span className="row">
+                    {new Date(s.startAt).toLocaleString("zh-TW")}
+                    <form action={bookSlotAction} style={{ marginLeft: "auto" }}>
+                      <input type="hidden" name="slotId" value={s.id} />
+                      <input type="hidden" name="applicationId" value={myApplication.id} />
+                      <button className="secondary">預約</button>
+                    </form>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </>
+        );
+      })())}
 
       <h2>提出申請</h2>
       {user ? (

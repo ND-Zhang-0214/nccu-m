@@ -47,3 +47,17 @@ export async function listPendingProfessors() {
 export async function setProfessorVerify(id: string, status: "APPROVED" | "REJECTED") {
   await db.update(t.professorProfiles).set({ verifyStatus: status }).where(eq(t.professorProfiles.id, id));
 }
+
+export async function addProfessorSpecialty(professorId: string, subfieldId: string) {
+  await db.insert(t.professorSpecialties).values({ professorId, subfieldId }).onConflictDoNothing();
+}
+
+/** 教授所屬系所底下的全部子領域名稱,供 AI 標籤建議時的候選清單使用。 */
+export async function listCandidateSubfieldsForProfessor(professorId: string) {
+  const [prof] = await db.select().from(t.professorProfiles).where(eq(t.professorProfiles.id, professorId));
+  if (!prof) return [];
+  const fields = await db.select().from(t.fields).where(eq(t.fields.departmentId, prof.departmentId));
+  if (fields.length === 0) return [];
+  const { inArray } = await import("drizzle-orm");
+  return db.select().from(t.subfields).where(inArray(t.subfields.fieldId, fields.map((f) => f.id)));
+}

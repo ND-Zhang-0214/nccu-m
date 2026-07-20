@@ -143,3 +143,39 @@ export async function requireAttachmentAccess(attachmentId: string) {
   await logSecurityEvent("authz.denied", "high", user.id, "", { resource: "ATTACHMENT", id: attachmentId });
   redirect("/");
 }
+
+/** 面試時段只有該需求的教授本人(或管理員)可開放/管理。 */
+export async function requireSlotManager(postingId: string) {
+  const user = await requireUser();
+  if (user.role === "ADMIN") return user;
+  const ok = await canOperatePosting(user.id, postingId);
+  if (!ok) {
+    await logSecurityEvent("authz.denied", "high", user.id, "", { resource: "INTERVIEW_SLOT", postingId });
+    redirect("/");
+  }
+  return user;
+}
+
+/** 群組只有成員可存取內容;非成員一律導回群組列表,不透露群組是否存在。 */
+export async function requireGroupMember(groupId: string) {
+  const user = await requireUser();
+  const { isGroupMember } = await import("@/server/repositories/groups");
+  const ok = await isGroupMember(groupId, user.id);
+  if (!ok) {
+    await logSecurityEvent("authz.denied", "high", user.id, "", { resource: "GROUP", id: groupId });
+    redirect("/groups");
+  }
+  return user;
+}
+
+/** 群組管理動作(邀請成員等)僅群組擁有者。 */
+export async function requireGroupOwner(groupId: string) {
+  const user = await requireUser();
+  const { getGroup } = await import("@/server/repositories/groups");
+  const group = await getGroup(groupId);
+  if (!group || (group.ownerId !== user.id && user.role !== "ADMIN")) {
+    await logSecurityEvent("authz.denied", "high", user.id, "", { resource: "GROUP_OWNER", id: groupId });
+    redirect("/groups");
+  }
+  return user;
+}

@@ -37,7 +37,7 @@ export async function listOpenReports() {
 }
 
 export async function resolveReport(id: string, status: "resolved" | "dismissed", outcome: string) {
-  await db.update(t.reports).set({ status, outcome }).where(eq(t.reports.id, id));
+  await db.update(t.reports).set({ status, outcome, resolvedAt: new Date() }).where(eq(t.reports.id, id));
 }
 
 export async function getReport(id: string) {

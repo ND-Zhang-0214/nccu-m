@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { currentUser } from "@/server/auth";
 import { getProfessorByUserId, getProfessorOnboarding } from "@/server/repositories/professors";
 import { listPostingsByProfessor, CATEGORIES } from "@/server/repositories/postings";
+import { AiTagsWidget } from "./ai-tags-widget";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +51,16 @@ export default async function ProfessorDashboard() {
           </ul>
         </div>
       )}
+
+      <h2>研究專長標籤</h2>
+      <p className="lede" style={{ fontSize: 13.5 }}>
+        AI 依你的檔案簡介建議標籤,點擊後才會實際加入,不會自動套用。
+      </p>
+      <AiTagsWidget professorId={prof.id} />
+
+      <p style={{ marginTop: 24 }}>
+        <Link href="/groups">我的研究團隊群組 →</Link>
+      </p>
 
       <h2>我發布的需求({postings.length})</h2>
       {postings.length === 0 ? (

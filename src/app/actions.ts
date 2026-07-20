@@ -16,7 +16,9 @@ import {
   applySchema, reportSchema, applicationStatusSchema, reportDecisionSchema,
   professorVerifySchema, personaSchema, sendMessageSchema, startConversationSchema,
   setStatusSchema, addContactSchema, discloseContactSchema, requestApprovalSchema,
-  decideApprovalSchema, totpVerifySchema,
+  decideApprovalSchema, totpVerifySchema, createSlotsSchema, bookSlotSchema,
+  createGroupSchema, inviteMemberSchema, groupPostSchema, suggestTagsSchema,
+  summarizeSchema, addSpecialtySchema,
 } from "@/server/schemas";
 import {
   getOrCreateConversationForApplication, confirmConversationByApplication, sendMessage,
@@ -25,6 +27,12 @@ import {
 import { requestApproval, decideApproval } from "@/server/repositories/dual-approval";
 import { logSecurityEvent } from "@/server/repositories/security";
 import { generateSecret, getOtpauthUrl, encryptSecret, verifyTotpCode } from "@/server/totp";
+import { createSlots, bookSlot, issueIcsToken } from "@/server/repositories/interviews";
+import { createGroup, inviteByEmail, createPost as createGroupPost } from "@/server/repositories/groups";
+import { suggestSubfieldTags, summarizeMotivation } from "@/server/ai";
+import { addProfessorSpecialty, listCandidateSubfieldsForProfessor, getProfessorByUserId as getProfByUserId } from "@/server/repositories/professors";
+import { requireSlotManager, requireGroupMember, requireGroupOwner } from "@/server/authz";
+import { getApplication as getApp } from "@/server/repositories/postings";
 import { db } from "@/server/db/client";
 import * as t from "@/server/db/schema";
 import { eq } from "drizzle-orm";
@@ -400,6 +408,119 @@ export async function cancelRelinquishmentAction(formData: FormData) {
   const { cancelRelinquishment } = await import("@/server/repositories/lifecycle");
   await cancelRelinquishment(id, admin.id);
   revalidatePath("/admin/lifecycle");
+}
+
+// ── M7 面試時段預約 + ics 行事曆同步 ────────────────────────
+
+export async function createSlotsAction(formData: FormData) {
+  const parsed = createSlotsSchema.safeParse({
+    postingId: formData.get("postingId"), startAt: formData.get("startAt"),
+    endAt: formData.get("endAt"), location: formData.get("location") || "",
+  });
+  if (!parsed.success) return;
+  const user = await requireSlotManager(parsed.data.postingId);
+  const posting = await getPosting(parsed.data.postingId);
+  if (!posting) return;
+  await createSlots(parsed.data.postingId, posting.professorId, [{
+    startAt: new Date(parsed.data.startAt), endAt: new Date(parsed.data.endAt), location: parsed.data.location,
+  }]);
+  await audit(user.id, "interview_slot.create", "POSTING", parsed.data.postingId);
+  revalidatePath(`/postings/${parsed.data.postingId}`);
+}
+
+export async function bookSlotAction(formData: FormData) {
+  const user = await requireActiveUser();
+  const parsed = bookSlotSchema.safeParse({ slotId: formData.get("slotId"), applicationId: formData.get("applicationId") });
+  if (!parsed.success) return;
+  const app = await getApp(parsed.data.applicationId);
+  if (!app || app.applicantId !== user.id) return; // 只能替自己的申請預約
+
+  const result = await bookSlot(parsed.data.slotId, parsed.data.applicationId);
+  if (!result) {
+    // 時段已被搶先預約(原子條件更新失敗),不視為系統錯誤,只是正常的併發結果
+    revalidatePath(`/postings/${app.postingId}`);
+    return;
+  }
+  await audit(user.id, "interview_slot.book", "INTERVIEW_SLOT", result.id);
+  const posting = await getPosting(app.postingId);
+  if (posting?.professor.userId) {
+    await notify(posting.professor.userId, "interview_slot.booked", "有人預約了面試時段",
+      `「${posting.title}」的一個面試時段已被預約。`, `/postings/${posting.id}/applications`);
+  }
+  revalidatePath(`/postings/${app.postingId}`);
+}
+
+export async function getIcsLinkAction() {
+  const user = await requireUser();
+  const token = await issueIcsToken(user.id);
+  await audit(user.id, "ics.token_issued");
+  redirect(`/api/calendar/${token}`);
+}
+
+// ── M8 教授實驗室/計畫團隊群組(貼文一律不公開)────────────────
+
+export async function createGroupAction(formData: FormData) {
+  const user = await requireActiveUser();
+  const parsed = createGroupSchema.safeParse({ name: formData.get("name"), description: formData.get("description") || "" });
+  if (!parsed.success) redirect("/groups");
+  const group = await createGroup(user.id, parsed.data.name, parsed.data.description);
+  await audit(user.id, "group.create", "GROUP", group.id);
+  redirect(`/groups/${group.id}`);
+}
+
+export async function inviteMemberAction(formData: FormData) {
+  const parsed = inviteMemberSchema.safeParse({ groupId: formData.get("groupId"), email: formData.get("email") });
+  if (!parsed.success) return;
+  const user = await requireGroupOwner(parsed.data.groupId);
+  const ok = await inviteByEmail(parsed.data.groupId, parsed.data.email);
+  if (ok) await audit(user.id, "group.invite", "GROUP", parsed.data.groupId, { email: parsed.data.email });
+  revalidatePath(`/groups/${parsed.data.groupId}`);
+}
+
+export async function createGroupPostAction(formData: FormData) {
+  const parsed = groupPostSchema.safeParse({ groupId: formData.get("groupId"), body: formData.get("body") });
+  if (!parsed.success) return;
+  const user = await requireGroupMember(parsed.data.groupId);
+  if (user.status !== "ACTIVE") return; // 唯讀帳號不可發文
+  await createGroupPost(parsed.data.groupId, user.id, parsed.data.body);
+  revalidatePath(`/groups/${parsed.data.groupId}`);
+}
+
+// ── AI 輔助(建議只能由教授手動確認後套用,絕不自動寫入)────────
+
+export async function suggestTagsAction(_prev: { tags: string[]; candidateMap?: Record<string, string> }, formData: FormData) {
+  const parsed = suggestTagsSchema.safeParse({ professorId: formData.get("professorId") });
+  if (!parsed.success) return { tags: [] as string[] };
+  const user = await requireUser();
+  const [prof] = await db.select().from(t.professorProfiles).where(eq(t.professorProfiles.id, parsed.data.professorId));
+  if (!prof || (prof.userId !== user.id && user.role !== "ADMIN")) return { tags: [] as string[] };
+
+  const candidates = await listCandidateSubfieldsForProfessor(parsed.data.professorId);
+  const tags = await suggestSubfieldTags(prof.bio, candidates.map((c) => c.name));
+  return { tags, candidateMap: Object.fromEntries(candidates.map((c) => [c.name, c.id])) };
+}
+
+export async function addSpecialtyAction(formData: FormData) {
+  const parsed = addSpecialtySchema.safeParse({ professorId: formData.get("professorId"), subfieldId: formData.get("subfieldId") });
+  if (!parsed.success) return;
+  const user = await requireUser();
+  const [prof] = await db.select().from(t.professorProfiles).where(eq(t.professorProfiles.id, parsed.data.professorId));
+  if (!prof || (prof.userId !== user.id && user.role !== "ADMIN")) return;
+  await addProfessorSpecialty(parsed.data.professorId, parsed.data.subfieldId);
+  await audit(user.id, "professor.specialty.add_via_ai_suggestion", "PROFESSOR", parsed.data.professorId, { subfieldId: parsed.data.subfieldId });
+  revalidatePath("/professor/dashboard");
+}
+
+export async function summarizeApplicationAction(formData: FormData) {
+  const parsed = summarizeSchema.safeParse({ applicationId: formData.get("applicationId") });
+  if (!parsed.success) return;
+  const { user, posting } = await requireApplicationStatusEditor(parsed.data.applicationId);
+  const app = await getApp(parsed.data.applicationId);
+  if (!app) return;
+  const summary = await summarizeMotivation(app.motivation);
+  await db.update(t.applications).set({ motivationSummary: summary }).where(eq(t.applications.id, app.id));
+  await audit(user.id, "application.ai_summarize", "APPLICATION", app.id);
+  revalidatePath(`/postings/${posting.id}/applications`);
 }
 
 // ── §6 檔案下載(時效簽名連結核發)──────────────────────────

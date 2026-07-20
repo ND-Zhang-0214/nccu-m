@@ -50,6 +50,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   {user && <Link href="/me/applications">我的申請</Link>}
                   {user && <Link href="/me/reports">我的檢舉</Link>}
                   {user && <Link href="/messages">訊息</Link>}
+                  {user && <Link href="/groups">群組</Link>}
                   {user && <Link href="/me/contacts">我的聯絡方式</Link>}
                 </>
               )}

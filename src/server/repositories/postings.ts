@@ -51,7 +51,7 @@ export async function listApplicationsForPosting(postingId: string) {
 }
 
 export async function updateApplicationStatus(id: string, status: string) {
-  const [row] = await db.update(t.applications).set({ status })
+  const [row] = await db.update(t.applications).set({ status, statusUpdatedAt: new Date() })
     .where(eq(t.applications.id, id)).returning();
   return row;
 }

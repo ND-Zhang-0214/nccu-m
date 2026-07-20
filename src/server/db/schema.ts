@@ -130,8 +130,10 @@ export const applications = sqliteTable("applications", {
   applicantId: text("applicant_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   status: text("status").notNull().default("pending"), // pending → interview_invited → interviewed → accepted | rejected
   motivation: text("motivation").notNull(),
+  motivationSummary: text("motivation_summary").notNull().default(""), // AI 摘要,需教授主動觸發產生,不自動跑
   payload: text("payload").notNull().default("{}"), // 類別專屬欄位(JSON)
   createdAt: now("created_at"),
+  statusUpdatedAt: integer("status_updated_at", { mode: "timestamp" }), // 學期報告「平均審核時間」統計用
 }, (t) => ({
   uq: uniqueIndex("a_posting_applicant").on(t.postingId, t.applicantId), // 不可重複申請
   applicantIdx: index("a_applicant").on(t.applicantId, t.createdAt),
@@ -160,6 +162,7 @@ export const reports = sqliteTable("reports", {
   status: text("status").notNull().default("open"), // open | resolved | dismissed
   outcome: text("outcome").notNull().default(""), // 供檢舉成立比例統計
   createdAt: now("created_at"),
+  resolvedAt: integer("resolved_at", { mode: "timestamp" }), // 學期報告「平均處理時效」統計用
 }, (t) => ({ statusIdx: index("r_status").on(t.status, t.createdAt) }));
 
 // ── 通知(供「檢舉/申請結果中性通知」「進度可視化」使用)──────
@@ -314,6 +317,55 @@ export const professorRelinquishments = sqliteTable("professor_relinquishments",
   status: text("status").notNull().default("pending"), // pending | completed | cancelled
   createdAt: now("created_at"),
 }, (t) => ({ statusIdx: index("pr_status").on(t.status, t.relinquishAt) }));
+
+// ── M7 面試時段預約 + ics 行事曆同步 ──────────────────────
+// 地點資訊為「媒合後才揭露」等級,僅對已預約該時段的申請人顯示(見 repository 層)。
+
+export const interviewSlots = sqliteTable("interview_slots", {
+  id: id(),
+  postingId: text("posting_id").notNull().references(() => postings.id, { onDelete: "cascade" }),
+  professorId: text("professor_id").notNull().references(() => professorProfiles.id),
+  startAt: integer("start_at", { mode: "timestamp" }).notNull(),
+  endAt: integer("end_at", { mode: "timestamp" }).notNull(),
+  location: text("location").notNull().default(""),
+  isBooked: integer("is_booked", { mode: "boolean" }).notNull().default(false),
+  applicationId: text("application_id").references(() => applications.id),
+  createdAt: now("created_at"),
+}, (t) => ({ postingIdx: index("is_posting").on(t.postingId, t.isBooked) }));
+
+// ics 行事曆訂閱 token:90–180 天到期(架構規格 §7 已定案),只存雜湊。
+export const icsTokens = sqliteTable("ics_tokens", {
+  id: id(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  createdAt: now("created_at"),
+}, (t) => ({ userIdx: index("ics_user").on(t.userId) }));
+
+// ── M8 教授實驗室/計畫團隊群組(貼文一律不可公開)────────────
+
+export const groups = sqliteTable("groups", {
+  id: id(),
+  ownerId: text("owner_id").notNull().references(() => users.id),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  createdAt: now("created_at"),
+});
+
+export const groupMembers = sqliteTable("group_members", {
+  groupId: text("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  role: text("role").notNull().default("member"), // owner | member
+  joinedAt: now("joined_at"),
+}, (t) => ({ pk: primaryKey({ columns: [t.groupId, t.userId] }), userIdx: index("gm_user").on(t.userId) }));
+
+export const groupPosts = sqliteTable("group_posts", {
+  id: id(),
+  groupId: text("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
+  authorId: text("author_id").notNull().references(() => users.id),
+  body: text("body").notNull(),
+  createdAt: now("created_at"),
+}, (t) => ({ groupIdx: index("gp_group").on(t.groupId, t.createdAt) }));
 
 // ── §6 檔案上傳安全 ────────────────────────────────────────
 // 目前唯一使用情境:學生於申請時可附上履歷/研究草稿。storagePath 指向伺服器本機的

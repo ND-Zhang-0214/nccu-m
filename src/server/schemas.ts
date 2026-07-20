@@ -73,3 +73,22 @@ export const decideApprovalSchema = z.object({
   id: z.string().min(1),
   decision: z.enum(["approved", "rejected"]),
 });
+
+// 面試時段
+export const createSlotsSchema = z.object({
+  postingId: z.string().min(1),
+  startAt: z.string().min(1),
+  endAt: z.string().min(1),
+  location: z.string().max(200).default(""),
+});
+export const bookSlotSchema = z.object({ slotId: z.string().min(1), applicationId: z.string().min(1) });
+
+// 教授群組
+export const createGroupSchema = z.object({ name: z.string().min(1).max(100), description: z.string().max(500).default("") });
+export const inviteMemberSchema = z.object({ groupId: z.string().min(1), email: z.string().email() });
+export const groupPostSchema = z.object({ groupId: z.string().min(1), body: z.string().min(1).max(2000) });
+
+// AI 輔助
+export const suggestTagsSchema = z.object({ professorId: z.string().min(1) });
+export const summarizeSchema = z.object({ applicationId: z.string().min(1) });
+export const addSpecialtySchema = z.object({ professorId: z.string().min(1), subfieldId: z.string().min(1) });
