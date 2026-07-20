@@ -43,6 +43,13 @@
       "when": 1784518424530,
       "tag": "0005_sticky_vapor",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784521746070,
+      "tag": "0006_pink_snowbird",
+      "breakpoints": true
     }
   ]
 }

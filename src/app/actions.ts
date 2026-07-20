@@ -15,15 +15,16 @@ import { requireUser, requireAdmin, requireApplicationStatusEditor, requireConve
 import {
   applySchema, reportSchema, applicationStatusSchema, reportDecisionSchema,
   professorVerifySchema, personaSchema, sendMessageSchema, startConversationSchema,
-  setStatusSchema, addContactSchema, discloseContactSchema,
+  setStatusSchema, addContactSchema, discloseContactSchema, requestApprovalSchema,
+  decideApprovalSchema, totpVerifySchema,
 } from "@/server/schemas";
 import {
   getOrCreateConversationForApplication, confirmConversationByApplication, sendMessage,
   setMemberStatus, setUserContact, deleteUserContact, discloseContact, ConversationLimitError,
 } from "@/server/repositories/messaging";
+import { requestApproval, decideApproval } from "@/server/repositories/dual-approval";
 import { logSecurityEvent } from "@/server/repositories/security";
 import { generateSecret, getOtpauthUrl, encryptSecret, verifyTotpCode } from "@/server/totp";
-import { totpVerifySchema } from "@/server/schemas";
 import { db } from "@/server/db/client";
 import * as t from "@/server/db/schema";
 import { eq } from "drizzle-orm";
@@ -283,6 +284,43 @@ export async function discloseContactAction(formData: FormData) {
   // §3.2 揭露留痕:此動作本身即是稽核事件,獨立於 contactDisclosures 存證表再記一筆業務稽核
   await audit(user.id, "contact.disclose", "CONVERSATION", parsed.data.conversationId);
   revalidatePath(`/messages/${parsed.data.conversationId}`);
+}
+
+// ── §2.5 管理員敏感調閱雙人核可 ────────────────────────────
+
+export async function requestApprovalAction(formData: FormData) {
+  const admin = await requireAdmin("/admin/approvals");
+  const parsed = requestApprovalSchema.safeParse({
+    action: formData.get("action"), targetType: formData.get("targetType"), targetId: formData.get("targetId"),
+  });
+  if (!parsed.success) redirect("/admin/approvals");
+  const row = await requestApproval(admin.id, parsed.data.action, parsed.data.targetType, parsed.data.targetId);
+  await audit(admin.id, "dual_approval.request", parsed.data.targetType, parsed.data.targetId, { approvalId: row.id });
+
+  // 通知其他管理員有待核可事項(不通知自己)
+  const admins = await db.select().from(t.users).where(eq(t.users.role, "ADMIN"));
+  for (const other of admins) {
+    if (other.id === admin.id) continue;
+    await notify(other.id, "approval.pending", "有一則待核可的敏感調閱申請",
+      `${admin.displayName} 申請調閱 ${parsed.data.targetType}`, "/admin/approvals");
+  }
+  redirect("/admin/approvals");
+}
+
+export async function decideApprovalAction(formData: FormData) {
+  const admin = await requireAdmin("/admin/approvals");
+  const parsed = decideApprovalSchema.safeParse({ id: formData.get("id"), decision: formData.get("decision") });
+  if (!parsed.success) redirect("/admin/approvals");
+
+  try {
+    await decideApproval(parsed.data.id, admin.id, parsed.data.decision);
+    await audit(admin.id, `dual_approval.${parsed.data.decision}`, "DUAL_APPROVAL", parsed.data.id);
+    await logSecurityEvent("admin.step_up", "low", admin.id, "", { note: `dual_approval ${parsed.data.decision}` });
+  } catch (e) {
+    // fail-closed:核可失敗(如嘗試自己核可自己)一律記錄安全事件,不靜默吞掉
+    await logSecurityEvent("authz.denied", "high", admin.id, "", { resource: "DUAL_APPROVAL", reason: String(e) });
+  }
+  revalidatePath("/admin/approvals");
 }
 
 // ── §6 檔案下載(時效簽名連結核發)──────────────────────────

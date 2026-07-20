@@ -62,3 +62,14 @@ export const discloseContactSchema = z.object({
   conversationId: z.string().min(1),
   contactId: z.string().min(1),
 });
+
+// §2.5 雙人核可
+export const requestApprovalSchema = z.object({
+  action: z.enum(["conversation.view_messages"]),
+  targetType: z.enum(["CONVERSATION"]),
+  targetId: z.string().min(1),
+});
+export const decideApprovalSchema = z.object({
+  id: z.string().min(1),
+  decision: z.enum(["approved", "rejected"]),
+});

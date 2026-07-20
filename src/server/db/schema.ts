@@ -313,11 +313,12 @@ export const fileDownloadTokens = sqliteTable("file_download_tokens", {
 export const dualApprovals = sqliteTable("dual_approvals", {
   id: id(),
   requesterId: text("requester_id").notNull().references(() => users.id),
-  action: text("action").notNull(), // 欲執行的動作代碼,如 audit.view_sensitive
+  action: text("action").notNull(), // 欲執行的動作代碼,如 conversation.view_messages
   targetType: text("target_type").notNull().default(""),
   targetId: text("target_id").notNull().default(""),
   status: text("status").notNull().default("pending"), // pending | approved | rejected | expired
   approverId: text("approver_id").references(() => users.id),
-  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  approvedAt: integer("approved_at", { mode: "timestamp" }), // 核可當下時間,存取時效窗口以此起算
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(), // 「待核可」本身的過期時間(逾時未核可自動失效)
   createdAt: now("created_at"),
 }, (t) => ({ statusIdx: index("da_status").on(t.status, t.createdAt) }));

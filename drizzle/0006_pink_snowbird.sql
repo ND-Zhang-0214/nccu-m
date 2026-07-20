@@ -1,0 +1,1 @@
+ALTER TABLE `dual_approvals` ADD `approved_at` integer;

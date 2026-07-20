@@ -89,6 +89,22 @@ export async function getConversationDetail(conversationId: string, viewerId: st
   return { conv, me, other, otherUser, messages: msgs };
 }
 
+/** 管理員專用:不檢查是否為對話成員(呼叫端必須自行確保已通過 §2.5 雙人核可,
+ *  這支函式本身不做授權判斷,只負責查資料——授權判斷集中在頁面/authz 層,
+ *  避免「查資料」跟「判斷能不能查」的邏輯混在一起難以稽核)。 */
+export async function getConversationDetailForAdmin(conversationId: string) {
+  const [conv] = await db.select().from(t.conversations).where(eq(t.conversations.id, conversationId));
+  if (!conv) return null;
+  const members = await db.select().from(t.conversationMembers).where(eq(t.conversationMembers.conversationId, conversationId));
+  const users = await Promise.all(members.map((m) => db.select().from(t.users).where(eq(t.users.id, m.userId))));
+  const msgs = await db.select().from(t.messages).where(eq(t.messages.conversationId, conversationId)).orderBy(asc(t.messages.createdAt));
+  return {
+    conv,
+    members: members.map((m, i) => ({ ...m, user: users[i][0] })),
+    messages: msgs,
+  };
+}
+
 export async function sendMessage(conversationId: string, senderId: string, body: string) {
   const [row] = await db.insert(t.messages).values({ conversationId, senderId, body }).returning();
   return row;
