@@ -22,6 +22,18 @@ export async function requireUser(): Promise<AuthedUser> {
   return user;
 }
 
+/** §帳號生命週期:唯讀狀態(ALUM/SUSPENDED/ARCHIVED)可以登入、可以瀏覽,
+ *  但不能執行任何會「新增/變更資料」的動作——這支函式是那道界線實際被畫的地方。
+ *  凡是申請、發訊息、發起對話、上傳附件、揭露聯絡方式等動作,一律先呼叫此函式。 */
+export async function requireActiveUser(): Promise<AuthedUser> {
+  const user = await requireUser();
+  if (user.status !== "ACTIVE") {
+    await logSecurityEvent("authz.denied", "low", user.id, "", { resource: "WRITE_ACTION", accountStatus: user.status });
+    redirect("/?readOnlyNotice=1");
+  }
+  return user;
+}
+
 export async function requireAdmin(next = "/admin"): Promise<AuthedUser> {
   const user = await requireUser();
   if (user.role !== "ADMIN") {

@@ -10,6 +10,9 @@ import { logSecurityEvent } from "@/server/repositories/security";
 export async function POST(req: Request) {
   const user = await currentUser();
   if (!user) return NextResponse.json({ error: "請先登入。" }, { status: 401 });
+  if (user.status !== "ACTIVE") {
+    return NextResponse.json({ error: "此帳號目前為唯讀狀態,無法上傳新檔案。" }, { status: 403 });
+  }
 
   let form: FormData;
   try {

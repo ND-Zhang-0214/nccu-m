@@ -11,7 +11,7 @@ import { audit, createReport, resolveReport, getReport } from "@/server/reposito
 import { setProfessorVerify, getProfessor } from "@/server/repositories/professors";
 import { notify, markAllRead } from "@/server/repositories/notifications";
 import { setPersonaCookie, type Persona } from "@/server/persona";
-import { requireUser, requireAdmin, requireApplicationStatusEditor, requireConversationMember } from "@/server/authz";
+import { requireUser, requireAdmin, requireApplicationStatusEditor, requireConversationMember, requireActiveUser } from "@/server/authz";
 import {
   applySchema, reportSchema, applicationStatusSchema, reportDecisionSchema,
   professorVerifySchema, personaSchema, sendMessageSchema, startConversationSchema,
@@ -32,6 +32,9 @@ import { eq } from "drizzle-orm";
 export async function applyAction(_prev: unknown, formData: FormData) {
   const user = await currentUser();
   if (!user) return { error: "請先登入校內帳號。" };
+  if (user.status !== "ACTIVE") {
+    return { error: "此帳號目前為唯讀狀態(校友/休學/封存),無法送出新申請。" };
+  }
   if (!(await hasSignedTerms(user.id, TERMS_VERSION))) {
     return { error: "請先於「服務條款」頁完成本版本條款簽署,再送出申請。", needTerms: true };
   }
@@ -194,7 +197,7 @@ export async function markNotificationsReadAction() {
 // ── 站內訊息系統(架構書 M4)────────────────────────────────
 
 export async function startConversationAction(formData: FormData) {
-  const user = await requireUser();
+  const user = await requireActiveUser();
   const parsed = startConversationSchema.safeParse({ applicationId: formData.get("applicationId") });
   if (!parsed.success) redirect("/");
 
@@ -228,6 +231,7 @@ export async function startConversationAction(formData: FormData) {
 export async function sendMessageAction(_prev: unknown, formData: FormData) {
   const user = await currentUser();
   if (!user) return { error: "請先登入。" };
+  if (user.status !== "ACTIVE") return { error: "此帳號目前為唯讀狀態,無法發送訊息。" };
   const parsed = sendMessageSchema.safeParse({
     conversationId: formData.get("conversationId"), body: formData.get("body"),
   });
@@ -279,7 +283,9 @@ export async function discloseContactAction(formData: FormData) {
     conversationId: formData.get("conversationId"), contactId: formData.get("contactId"),
   });
   if (!parsed.success) return;
-  const user = await requireConversationMember(parsed.data.conversationId);
+  const user = await requireActiveUser();
+  const isMember = await (await import("@/server/repositories/messaging")).isConversationMember(parsed.data.conversationId, user.id);
+  if (!isMember) redirect("/messages");
   await discloseContact(parsed.data.conversationId, user.id, parsed.data.contactId);
   // §3.2 揭露留痕:此動作本身即是稽核事件,獨立於 contactDisclosures 存證表再記一筆業務稽核
   await audit(user.id, "contact.disclose", "CONVERSATION", parsed.data.conversationId);
@@ -321,6 +327,79 @@ export async function decideApprovalAction(formData: FormData) {
     await logSecurityEvent("authz.denied", "high", admin.id, "", { resource: "DUAL_APPROVAL", reason: String(e) });
   }
   revalidatePath("/admin/approvals");
+}
+
+// ── 帳號生命週期管理(§帳號生命週期,見 lifecycle.ts 檔頭關於偵測/排程的範圍說明)──
+
+async function findUserByEmail(email: string) {
+  const [user] = await db.select().from(t.users).where(eq(t.users.email, email.toLowerCase()));
+  return user ?? null;
+}
+
+export async function markGraduationAction(formData: FormData) {
+  const admin = await requireAdmin("/admin/lifecycle");
+  const target = await findUserByEmail(String(formData.get("email") || ""));
+  if (target) {
+    const { markGraduationDetected } = await import("@/server/repositories/lifecycle");
+    await markGraduationDetected(target.id, admin.id);
+  }
+  revalidatePath("/admin/lifecycle");
+}
+
+export async function runLifecycleBatchAction() {
+  const admin = await requireAdmin("/admin/lifecycle");
+  const { processLifecycleTransitions } = await import("@/server/repositories/lifecycle");
+  const result = await processLifecycleTransitions();
+  await audit(admin.id, "lifecycle.batch_run", "", "", result);
+  revalidatePath("/admin/lifecycle");
+}
+
+export async function suspendAccountAction(formData: FormData) {
+  const admin = await requireAdmin("/admin/lifecycle");
+  const target = await findUserByEmail(String(formData.get("email") || ""));
+  if (target) {
+    const { suspendAccount } = await import("@/server/repositories/lifecycle");
+    await suspendAccount(target.id, admin.id, String(formData.get("reason") || ""));
+  }
+  revalidatePath("/admin/lifecycle");
+}
+
+export async function restoreAccountAction(formData: FormData) {
+  const admin = await requireAdmin("/admin/lifecycle");
+  const target = await findUserByEmail(String(formData.get("email") || ""));
+  if (target) {
+    const { restoreAccount } = await import("@/server/repositories/lifecycle");
+    await restoreAccount(target.id, admin.id).catch(() => {}); // 若非 SUSPENDED 狀態,安靜略過(前端未強制檢查現況)
+  }
+  revalidatePath("/admin/lifecycle");
+}
+
+export async function archiveAccountAction(formData: FormData) {
+  const admin = await requireAdmin("/admin/lifecycle");
+  const target = await findUserByEmail(String(formData.get("email") || ""));
+  if (target) {
+    const { archiveAccount } = await import("@/server/repositories/lifecycle");
+    await archiveAccount(target.id, admin.id, String(formData.get("reason") || ""));
+  }
+  revalidatePath("/admin/lifecycle");
+}
+
+export async function initiateRelinquishmentAction(formData: FormData) {
+  const admin = await requireAdmin("/admin/lifecycle");
+  const professorId = String(formData.get("professorId") || "");
+  const days = Number(formData.get("days") || 30);
+  const reason = String(formData.get("reason") || "");
+  const { initiateRelinquishment } = await import("@/server/repositories/lifecycle");
+  await initiateRelinquishment(professorId, admin.id, days, reason).catch(() => {}); // 表單已限制 30–90,失敗多半是查無此教授
+  revalidatePath("/admin/lifecycle");
+}
+
+export async function cancelRelinquishmentAction(formData: FormData) {
+  const admin = await requireAdmin("/admin/lifecycle");
+  const id = String(formData.get("id") || "");
+  const { cancelRelinquishment } = await import("@/server/repositories/lifecycle");
+  await cancelRelinquishment(id, admin.id);
+  revalidatePath("/admin/lifecycle");
 }
 
 // ── §6 檔案下載(時效簽名連結核發)──────────────────────────

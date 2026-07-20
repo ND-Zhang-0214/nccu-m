@@ -24,6 +24,12 @@ export const users = sqliteTable("users", {
   status: text("status").notNull().default("ACTIVE"), // ACTIVE | PENDING | SUSPENDED | ALUM | ARCHIVED
   totpSecretEnc: text("totp_secret_enc"), // §2.5:管理員 2FA 種子(加密儲存,見 crypto.ts)
   totpEnabled: integer("totp_enabled", { mode: "boolean" }).notNull().default(false),
+  // ── 帳號生命週期自動化(架構書 §帳號生命週期)──
+  // 偵測到「可能已離校」(email 失效訊號)後,不立即降級,而是進入 6 個月緩衝期,
+  // bufferEndsAt 到期後才自動轉為 ALUM(唯讀)。正式環境的偵測來源應是教務處 API
+  // 或信箱退信偵測,目前以管理員手動觸發模擬(見 lifecycle.ts 檔頭說明)。
+  lifecycleBufferEndsAt: integer("lifecycle_buffer_ends_at", { mode: "timestamp" }),
+  lifecycleNote: text("lifecycle_note").notNull().default(""),
   createdAt: now("created_at"),
 });
 
@@ -111,6 +117,7 @@ export const postings = sqliteTable("postings", {
   title: text("title").notNull(),
   description: text("description").notNull(),
   isOpen: integer("is_open", { mode: "boolean" }).notNull().default(true),
+  closedReason: text("closed_reason").notNull().default(""), // 空字串=手動關閉;professor_relinquished 等=系統自動關閉
   createdAt: now("created_at"),
 }, (t) => ({
   openCatIdx: index("po_open_cat").on(t.isOpen, t.category),
@@ -283,6 +290,30 @@ export const contactDisclosures = sqliteTable("contact_disclosures", {
   valueEnc: text("value_enc").notNull(),
   disclosedAt: now("disclosed_at"),
 }, (t) => ({ convIdx: index("cd_conv").on(t.conversationId) }));
+
+// ── 帳號血緣(架構書:學士→碩士開新帳號的通則,碩士→博士可專案延用)──────
+// 舊帳號內容完全不動,只多一條指向新帳號的關聯;isVisible 控制是否公開可查詢。
+
+export const accountLineage = sqliteTable("account_lineage", {
+  id: id(),
+  fromAccountId: text("from_account_id").notNull().references(() => users.id),
+  toAccountId: text("to_account_id").notNull().references(() => users.id),
+  linkType: text("link_type").notNull(), // bachelor_to_master | master_to_phd_new | master_to_phd_continued
+  isVisible: integer("is_visible", { mode: "boolean" }).notNull().default(true),
+  createdAt: now("created_at"),
+}, (t) => ({ fromIdx: index("al_from").on(t.fromAccountId), toIdx: index("al_to").on(t.toAccountId) }));
+
+// ── 教授帳號交接(架構書:放棄帳號需 30–90 天前申請,通知利益相關人)────────
+
+export const professorRelinquishments = sqliteTable("professor_relinquishments", {
+  id: id(),
+  professorId: text("professor_id").notNull().references(() => professorProfiles.id),
+  initiatedById: text("initiated_by_id").notNull().references(() => users.id),
+  reason: text("reason").notNull().default(""),
+  relinquishAt: integer("relinquish_at", { mode: "timestamp" }).notNull(), // 至少 30 天後
+  status: text("status").notNull().default("pending"), // pending | completed | cancelled
+  createdAt: now("created_at"),
+}, (t) => ({ statusIdx: index("pr_status").on(t.status, t.relinquishAt) }));
 
 // ── §6 檔案上傳安全 ────────────────────────────────────────
 // 目前唯一使用情境:學生於申請時可附上履歷/研究草稿。storagePath 指向伺服器本機的

@@ -49,7 +49,10 @@ export async function verifyCodeAndLogin(email: string, code: string) {
       email, displayName: email.split("@")[0],
     }).returning();
   }
-  if (user.status === "SUSPENDED" || user.status === "ARCHIVED") return null;
+  // 注意:SUSPENDED(休學)/ALUM(校友)/ARCHIVED(退學/封存)一律允許登入——
+  // 架構書定調這些是「唯讀」狀態,不是「禁止存取」,使用者仍須能查看自己的歷史紀錄。
+  // 真正的限制在於「能不能做出新的動作」(申請、發訊息等),那一層攔截在
+  // src/server/authz.ts 的 requireActiveUser(),不是在登入這一關擋。
 
   // §2.4 session 輪替:每次登入一律核發全新 token,並清掉該使用者已過期/閒置逾時的舊 session
   // (不強制單一裝置登入——多裝置是常見合理使用情境,只清「已經失效」的殘留紀錄)。

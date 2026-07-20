@@ -17,6 +17,7 @@ export default async function AdminPage() {
         所有管理操作(核准、駁回、結案)皆寫入不可刪除之稽核紀錄。
         {" "}<Link href="/admin/security">查看安全事件 →</Link>
         {" "}<Link href="/admin/approvals">敏感調閱雙人核可 →</Link>
+        {" "}<Link href="/admin/lifecycle">帳號生命週期 →</Link>
       </p>
 
       <h2>待審核教授帳號({pending.length})</h2>
