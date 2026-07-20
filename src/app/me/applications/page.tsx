@@ -3,6 +3,9 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { currentUser } from "@/server/auth";
 import { listMyApplications, CATEGORIES } from "@/server/repositories/postings";
+import { listAttachmentsForApplication } from "@/server/repositories/attachments";
+import { requestFileLinkAction } from "@/app/actions";
+import { UploadWidget } from "./upload-widget";
 
 export const dynamic = "force-dynamic";
 
@@ -49,15 +52,33 @@ export default async function MyApplicationsPage() {
         <p className="lede">你還沒有送出任何申請。<Link href="/postings">瀏覽開放需求</Link></p>
       ) : (
         applications.map((a) => (
-          <article key={a.id} className="prof-card">
-            <h3>
-              <Link href={`/postings/${a.postingId}`}>{a.posting.title}</Link>
-              <span className="badge cat">{CATEGORIES[a.posting.category]}</span>
-            </h3>
-            <StatusTrack status={a.status} />
-          </article>
+          <ApplicationCard key={a.id} application={a} />
         ))
       )}
     </>
+  );
+}
+
+async function ApplicationCard({ application: a }: { application: Awaited<ReturnType<typeof listMyApplications>>[number] }) {
+  const attachments = await listAttachmentsForApplication(a.id);
+  return (
+    <article className="prof-card">
+      <h3>
+        <Link href={`/postings/${a.postingId}`}>{a.posting.title}</Link>
+        <span className="badge cat">{CATEGORIES[a.posting.category]}</span>
+      </h3>
+      <StatusTrack status={a.status} />
+      {attachments.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          {attachments.map((att) => (
+            <form key={att.id} action={requestFileLinkAction} style={{ display: "inline-block", marginRight: 8 }}>
+              <input type="hidden" name="attachmentId" value={att.id} />
+              <button className="secondary" style={{ fontSize: 12.5 }}>下載 {att.originalName || "附件"}</button>
+            </form>
+          ))}
+        </div>
+      )}
+      <UploadWidget applicationId={a.id} />
+    </article>
   );
 }

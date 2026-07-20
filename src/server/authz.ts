@@ -116,3 +116,18 @@ export async function requireConversationMember(conversationId: string) {
   }
   return user;
 }
+
+/** 附件只有上傳者本人、該申請對應需求的教授、或管理員可存取(§2.2、§6)。 */
+export async function requireAttachmentAccess(attachmentId: string) {
+  const user = await requireUser();
+  const { getAttachment } = await import("@/server/repositories/attachments");
+  const att = await getAttachment(attachmentId);
+  if (!att) redirect("/");
+  if (att.ownerId === user.id || user.role === "ADMIN") return { user, att };
+  if (att.applicationId) {
+    const isOwner = await canOperatePosting(user.id, (await getApplication(att.applicationId))?.postingId ?? "");
+    if (isOwner) return { user, att };
+  }
+  await logSecurityEvent("authz.denied", "high", user.id, "", { resource: "ATTACHMENT", id: attachmentId });
+  redirect("/");
+}

@@ -284,6 +284,32 @@ export const contactDisclosures = sqliteTable("contact_disclosures", {
   disclosedAt: now("disclosed_at"),
 }, (t) => ({ convIdx: index("cd_conv").on(t.conversationId) }));
 
+// ── §6 檔案上傳安全 ────────────────────────────────────────
+// 目前唯一使用情境:學生於申請時可附上履歷/研究草稿。storagePath 指向伺服器本機的
+// 私有儲存目錄(非 public/,不可直接以固定網址存取),正式環境換成雲端物件儲存時,
+// 只需改 src/server/storage.ts 的實作,本表結構不需變動。
+
+export const attachments = sqliteTable("attachments", {
+  id: id(),
+  ownerId: text("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  applicationId: text("application_id").references(() => applications.id, { onDelete: "cascade" }),
+  originalName: text("original_name").notNull().default(""), // 僅供顯示用,絕不用作儲存路徑(防路徑穿越)
+  storedFilename: text("stored_filename").notNull().unique(), // 系統隨機產生,與原始檔名無關
+  mimeType: text("mime_type").notNull(), // 依 magic number 偵測結果,不採信使用者端聲稱的 Content-Type
+  sizeBytes: integer("size_bytes").notNull(),
+  scanStatus: text("scan_status").notNull().default("pending"), // pending | clean | infected | error
+  createdAt: now("created_at"),
+}, (t) => ({ ownerIdx: index("att_owner").on(t.ownerId), appIdx: index("att_app").on(t.applicationId) }));
+
+// 時效簽名下載連結(§5.2 呼應,不給永久公開網址)。tokenHash 只存雜湊,與 session 同慣例。
+export const fileDownloadTokens = sqliteTable("file_download_tokens", {
+  id: id(),
+  attachmentId: text("attachment_id").notNull().references(() => attachments.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  createdAt: now("created_at"),
+}, (t) => ({ attIdx: index("fdt_att").on(t.attachmentId) }));
+
 export const dualApprovals = sqliteTable("dual_approvals", {
   id: id(),
   requesterId: text("requester_id").notNull().references(() => users.id),

@@ -285,6 +285,18 @@ export async function discloseContactAction(formData: FormData) {
   revalidatePath(`/messages/${parsed.data.conversationId}`);
 }
 
+// ── §6 檔案下載(時效簽名連結核發)──────────────────────────
+
+export async function requestFileLinkAction(formData: FormData) {
+  const attachmentId = String(formData.get("attachmentId"));
+  const { requireAttachmentAccess } = await import("@/server/authz");
+  const { user } = await requireAttachmentAccess(attachmentId);
+  const { createDownloadToken } = await import("@/server/repositories/attachments");
+  const token = await createDownloadToken(attachmentId);
+  await audit(user.id, "attachment.download_link_issued", "ATTACHMENT", attachmentId);
+  redirect(`/api/files/download/${token}`);
+}
+
 // ── §2.5 管理員雙因素驗證(啟用 + 重驗)────────────────────
 // 這兩個動作刻意不經過 requireAdmin()(會造成導向迴圈,setup/step-up 本身就是
 // requireAdmin 導向的目的地),改為直接檢查 role,但一樣是 fail-closed。
