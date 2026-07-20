@@ -1,20 +1,22 @@
-import { redirect } from "next/navigation";
-import { currentUser } from "@/server/auth";
+import Link from "next/link";
 import { listPendingProfessors } from "@/server/repositories/professors";
 import { listOpenReports } from "@/server/repositories/audit";
 import { verifyProfessorAction, resolveReportAction } from "@/app/actions";
+import { requireAdmin } from "@/server/authz";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminPage() {
-  const user = await currentUser();
-  if (!user || user.role !== "ADMIN") redirect("/");
+  await requireAdmin("/admin"); // §2.5:未啟用/逾時 2FA 會被導去設定或重驗
   const [pending, reports] = await Promise.all([listPendingProfessors(), listOpenReports()]);
 
   return (
     <>
       <h1>管理後台</h1>
-      <p className="lede">所有管理操作(核准、駁回、結案)皆寫入不可刪除之稽核紀錄。</p>
+      <p className="lede">
+        所有管理操作(核准、駁回、結案)皆寫入不可刪除之稽核紀錄。
+        {" "}<Link href="/admin/security">查看安全事件 →</Link>
+      </p>
 
       <h2>待審核教授帳號({pending.length})</h2>
       {pending.length === 0 ? <p className="lede">目前沒有待審核的教授帳號。</p> : (

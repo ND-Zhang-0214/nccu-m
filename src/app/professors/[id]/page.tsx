@@ -2,13 +2,17 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getProfessor } from "@/server/repositories/professors";
 import { CATEGORIES } from "@/server/repositories/postings";
+import { guardAgainstScraping } from "@/server/anti-scrape";
+import { currentUser } from "@/server/auth";
 
 export const dynamic = "force-dynamic";
 
 export default async function ProfessorPage({ params }: { params: { id: string } }) {
+  await guardAgainstScraping("PROFESSOR", params.id, `/professors/${params.id}`);
   const data = await getProfessor(params.id);
   if (!data) notFound();
   const { prof, dept, college, specialties, openPostings } = data;
+  const user = await currentUser();
   return (
     <>
       <nav className="crumbs">
@@ -24,7 +28,12 @@ export default async function ProfessorPage({ params }: { params: { id: string }
         {prof.verifyStatus === "SEED" && <span className="badge">示範資料</span>}
       </h1>
       <p className="lede">{prof.title}・{dept.name}</p>
-      {prof.bio && <p>{prof.bio}</p>}
+      {/* §3.2 分級曝光:完整簡介需登入才顯示,免登入僅見已在上方公開的姓名/職稱/系所/專長標籤 */}
+      {user ? (
+        prof.bio && <p>{prof.bio}</p>
+      ) : (
+        prof.bio && <div className="notice">完整簡介需登入後查看。<Link href="/login">以校內信箱登入</Link></div>
+      )}
 
       <h2>研究專長</h2>
       <div className="chiprow">

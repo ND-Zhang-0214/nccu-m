@@ -1,23 +1,27 @@
 "use server";
 // Server Actions:申請、簽署條款、檢舉、管理操作
-// 所有動作皆:驗證登入 → 驗證輸入(zod)→ 執行 → 寫入稽核紀錄
-import { z } from "zod";
+// 所有動作皆:驗證登入/授權(authz.ts)→ 驗證輸入(schemas.ts)→ 執行 → 寫入稽核紀錄
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { currentUser, hasSignedTerms, signTerms, requestIp, logout } from "@/server/auth";
+import { headers } from "next/headers";
+import { currentUser, hasSignedTerms, signTerms, requestIp, logout, currentSession, markSessionStepUp } from "@/server/auth";
 import { TERMS_VERSION } from "@/server/terms";
-import { createApplication, getApplication, getPosting, updateApplicationStatus } from "@/server/repositories/postings";
+import { createApplication, getPosting, updateApplicationStatus } from "@/server/repositories/postings";
 import { audit, createReport, resolveReport, getReport } from "@/server/repositories/audit";
-import { setProfessorVerify, getProfessor, getProfessorByUserId } from "@/server/repositories/professors";
+import { setProfessorVerify, getProfessor } from "@/server/repositories/professors";
 import { notify, markAllRead } from "@/server/repositories/notifications";
 import { setPersonaCookie, type Persona } from "@/server/persona";
-import { headers } from "next/headers";
-
-const applySchema = z.object({
-  postingId: z.string().min(1),
-  motivation: z.string().min(20, "申請動機至少 20 字").max(2000),
-  payload: z.string().default("{}"),
-});
+import { requireUser, requireAdmin, requireApplicationStatusEditor } from "@/server/authz";
+import {
+  applySchema, reportSchema, applicationStatusSchema, reportDecisionSchema,
+  professorVerifySchema, personaSchema,
+} from "@/server/schemas";
+import { logSecurityEvent } from "@/server/repositories/security";
+import { generateSecret, getOtpauthUrl, encryptSecret, verifyTotpCode } from "@/server/totp";
+import { totpVerifySchema } from "@/server/schemas";
+import { db } from "@/server/db/client";
+import * as t from "@/server/db/schema";
+import { eq } from "drizzle-orm";
 
 export async function applyAction(_prev: unknown, formData: FormData) {
   const user = await currentUser();
@@ -49,6 +53,7 @@ export async function applyAction(_prev: unknown, formData: FormData) {
         `「${posting.title}」有新的申請,前往查看並比較。`, `/postings/${posting.id}/applications`);
     }
   } catch (e: unknown) {
+    // §4.3 fail-closed:對外一律一般化訊息,細節只落在伺服器日誌(e 不外傳)。
     const msg = String(e);
     if (msg.includes("UNIQUE")) return { error: "你已申請過此需求,不可重複申請。" };
     return { error: "送出失敗,請稍後再試。" };
@@ -58,8 +63,7 @@ export async function applyAction(_prev: unknown, formData: FormData) {
 }
 
 export async function signTermsAction() {
-  const user = await currentUser();
-  if (!user) redirect("/login");
+  const user = await requireUser();
   const ua = headers().get("user-agent") || "";
   await signTerms(user.id, TERMS_VERSION, requestIp(), ua);
   await audit(user.id, "terms.sign", "TERMS", TERMS_VERSION);
@@ -70,12 +74,6 @@ export async function logoutAction() {
   await logout();
   redirect("/");
 }
-
-const reportSchema = z.object({
-  targetType: z.enum(["POSTING", "PROFESSOR", "USER"]),
-  targetId: z.string().min(1),
-  reason: z.string().min(10, "檢舉理由至少 10 字").max(1000),
-});
 
 export async function reportAction(_prev: unknown, formData: FormData) {
   const user = await currentUser();
@@ -91,18 +89,15 @@ export async function reportAction(_prev: unknown, formData: FormData) {
   return { ok: "檢舉已送出。安全疑慮案件將於 48 小時內初步處理,一般案件 7 日內。" };
 }
 
-// ── 管理操作(僅 ADMIN;所有動作寫入稽核)─────────────────
-
-async function requireAdmin() {
-  const user = await currentUser();
-  if (!user || user.role !== "ADMIN") redirect("/");
-  return user;
-}
+// ── 管理操作(僅 ADMIN,需 2FA;所有動作寫入稽核)─────────────
 
 export async function verifyProfessorAction(formData: FormData) {
-  const admin = await requireAdmin();
-  const id = String(formData.get("id"));
-  const decision = String(formData.get("decision")) as "APPROVED" | "REJECTED";
+  const admin = await requireAdmin("/admin");
+  const parsed = professorVerifySchema.safeParse({
+    id: formData.get("id"), decision: formData.get("decision"),
+  });
+  if (!parsed.success) return; // fail-closed:格式不對直接不執行
+  const { id, decision } = parsed.data;
   await setProfessorVerify(id, decision);
   await audit(admin.id, `professor.verify.${decision.toLowerCase()}`, "PROFESSOR", id);
   const prof = await getProfessor(id);
@@ -115,9 +110,12 @@ export async function verifyProfessorAction(formData: FormData) {
 }
 
 export async function resolveReportAction(formData: FormData) {
-  const admin = await requireAdmin();
-  const id = String(formData.get("id"));
-  const decision = String(formData.get("decision")) as "resolved" | "dismissed";
+  const admin = await requireAdmin("/admin");
+  const parsed = reportDecisionSchema.safeParse({
+    id: formData.get("id"), decision: formData.get("decision"),
+  });
+  if (!parsed.success) return;
+  const { id, decision } = parsed.data;
   await resolveReport(id, decision, decision === "resolved" ? "成立" : "不成立");
   await audit(admin.id, `report.${decision}`, "REPORT", id);
 
@@ -143,24 +141,17 @@ export async function resolveReportAction(formData: FormData) {
   revalidatePath("/admin");
 }
 
-// ── 申請狀態管理(教授/管理員;對應決策表 #6 並排比較介面的操作端)────
-
-async function requireApplicationOwner(applicationId: string) {
-  const user = await currentUser();
-  if (!user) redirect("/login");
-  const app = await getApplication(applicationId);
-  if (!app) redirect("/");
-  const posting = await getPosting(app.postingId);
-  if (!posting) redirect("/");
-  const isOwner = posting.professor.userId === user.id;
-  if (!isOwner && user.role !== "ADMIN") redirect("/");
-  return { user, app, posting };
-}
+// ── 申請狀態管理(教授本人/管理員;§2.2 IDOR 防護 + 狀態白名單)──
 
 export async function updateApplicationStatusAction(formData: FormData) {
-  const applicationId = String(formData.get("applicationId"));
-  const status = String(formData.get("status"));
-  const { user, app, posting } = await requireApplicationOwner(applicationId);
+  const parsed = applicationStatusSchema.safeParse({
+    applicationId: formData.get("applicationId"), status: formData.get("status"),
+  });
+  if (!parsed.success) return; // fail-closed
+  const { applicationId, status } = parsed.data;
+
+  // requireApplicationStatusEditor 刻意排除申請人本人——避免學生自行核准/婉拒自己的申請
+  const { user, app, posting } = await requireApplicationStatusEditor(applicationId);
   await updateApplicationStatus(applicationId, status);
   await audit(user.id, "application.status.update", "APPLICATION", applicationId, { status });
 
@@ -177,15 +168,65 @@ export async function updateApplicationStatusAction(formData: FormData) {
 // ── 身分視角切換(對應決策表 #9;僅影響導覽顯示)──────────────
 
 export async function switchPersonaAction(formData: FormData) {
-  const value = String(formData.get("persona")) as Persona;
-  setPersonaCookie(value === "PROFESSOR" ? "PROFESSOR" : "STUDENT");
-  const back = String(formData.get("back") || "/");
-  redirect(back);
+  const parsed = personaSchema.safeParse({
+    persona: formData.get("persona"), back: formData.get("back") || "/",
+  });
+  if (!parsed.success) return;
+  setPersonaCookie(parsed.data.persona as Persona);
+  redirect(parsed.data.back);
 }
 
 export async function markNotificationsReadAction() {
-  const user = await currentUser();
-  if (!user) redirect("/login");
+  const user = await requireUser();
   await markAllRead(user.id);
   revalidatePath("/notifications");
+}
+
+// ── §2.5 管理員雙因素驗證(啟用 + 重驗)────────────────────
+// 這兩個動作刻意不經過 requireAdmin()(會造成導向迴圈,setup/step-up 本身就是
+// requireAdmin 導向的目的地),改為直接檢查 role,但一樣是 fail-closed。
+
+export async function setupTotpAction(formData: FormData) {
+  const user = await currentUser();
+  if (!user || user.role !== "ADMIN") redirect("/");
+  const next = String(formData.get("next") || "/admin");
+  const secret = String(formData.get("secret") || "");
+  const parsed = totpVerifySchema.safeParse({ code: formData.get("code") });
+
+  if (!secret || !parsed.success) {
+    redirect(`/admin/setup-2fa?next=${encodeURIComponent(next)}`);
+  }
+
+  const encSecret = encryptSecret(secret);
+  const ok = verifyTotpCode(encSecret, parsed.data.code);
+  if (!ok) {
+    await logSecurityEvent("admin.step_up", "medium", user.id, "", { result: "setup_failed" });
+    redirect(`/admin/setup-2fa?next=${encodeURIComponent(next)}&error=1`);
+  }
+
+  await db.update(t.users).set({ totpSecretEnc: encSecret, totpEnabled: true }).where(eq(t.users.id, user.id));
+  await audit(user.id, "admin.2fa.enabled");
+  const session = await currentSession();
+  if (session) await markSessionStepUp(session.id);
+  redirect(next);
+}
+
+export async function stepUpTotpAction(formData: FormData) {
+  const user = await currentUser();
+  if (!user || user.role !== "ADMIN" || !user.totpSecretEnc) redirect("/");
+  const next = String(formData.get("next") || "/admin");
+  const parsed = totpVerifySchema.safeParse({ code: formData.get("code") });
+  if (!parsed.success) {
+    redirect(`/admin/step-up?next=${encodeURIComponent(next)}`);
+  }
+
+  const ok = verifyTotpCode(user.totpSecretEnc, parsed.data.code);
+  if (!ok) {
+    await logSecurityEvent("admin.step_up", "medium", user.id, "", { result: "failed" });
+    redirect(`/admin/step-up?next=${encodeURIComponent(next)}&error=1`);
+  }
+  const session = await currentSession();
+  if (session) await markSessionStepUp(session.id);
+  await logSecurityEvent("admin.step_up", "low", user.id, "", { result: "ok" });
+  redirect(next);
 }

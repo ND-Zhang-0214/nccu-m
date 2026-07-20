@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSubfieldWithProfessors } from "@/server/repositories/taxonomy";
+import { guardAgainstScraping } from "@/server/anti-scrape";
 
 export const dynamic = "force-dynamic";
 
 export default async function SubfieldPage({ params }: { params: { id: string } }) {
+  await guardAgainstScraping("SUBFIELD", params.id, `/subfields/${params.id}`);
   const data = await getSubfieldWithProfessors(params.id);
   if (!data) notFound();
   return (
@@ -27,6 +29,7 @@ export default async function SubfieldPage({ params }: { params: { id: string } 
         <div className="notice">此子領域尚無教授建檔。</div>
       ) : (
         <div className="card-grid">
+          <a href="/directory-index" className="bait-link" tabIndex={-1} aria-hidden="true">All Professors Index</a>
           {data.professors.map((p) => (
             <Link className="mini-card" href={`/professors/${p.id}`} key={p.id}>
               <div className="mini-card-top">

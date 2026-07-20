@@ -1,0 +1,26 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      # §7:高風險以上的已知漏洞未解 → CI 失敗,擋在合併之前而非上線後才發現
+      - name: 相依套件安全掃描
+        run: npm audit --audit-level=high
+      - name: 型別檢查與建置
+        run: npm run build
+        env:
+          DATABASE_URL: "file:./ci.db"
+          SESSION_SECRET: "ci-only-not-a-real-secret"
+          ALLOWED_EMAIL_DOMAINS: "g.nccu.edu.tw,nccu.edu.tw"

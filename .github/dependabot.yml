@@ -1,0 +1,11 @@
+# §7 軟體供應鏈:自動偵測套件已知漏洞並提 PR,不需人工定期手動盯
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]

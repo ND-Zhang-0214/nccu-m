@@ -38,6 +38,7 @@ export default async function DeptPage({ params }: { params: { college: string; 
         <p className="lede">尚無教授建檔。</p>
       ) : (
         <div className="card-grid">
+          <a href="/directory-index" className="bait-link" tabIndex={-1} aria-hidden="true">All Professors Index</a>
           {data.professors.map((p) => (
             <Link className="mini-card" href={`/professors/${p.id}`} key={p.id}>
               <div className="mini-card-top">

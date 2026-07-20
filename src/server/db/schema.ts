@@ -22,6 +22,8 @@ export const users = sqliteTable("users", {
   role: text("role").notNull().default("STUDENT_BACHELOR"), // STUDENT_BACHELOR | STUDENT_GRAD | PROFESSOR | ADMIN
   subRoles: text("sub_roles").notNull().default("[]"), // JSON array;權限判斷取聯集
   status: text("status").notNull().default("ACTIVE"), // ACTIVE | PENDING | SUSPENDED | ALUM | ARCHIVED
+  totpSecretEnc: text("totp_secret_enc"), // §2.5:管理員 2FA 種子(加密儲存,見 crypto.ts)
+  totpEnabled: integer("totp_enabled", { mode: "boolean" }).notNull().default(false),
   createdAt: now("created_at"),
 });
 
@@ -38,7 +40,9 @@ export const sessions = sqliteTable("sessions", {
   id: id(),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   tokenHash: text("token_hash").notNull().unique(), // 只存雜湊,不存明文 token
-  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(), // §2.4:絕對逾時
+  lastUsedAt: now("last_used_at"), // §2.4:閒置逾時判斷依據
+  stepUpAt: integer("step_up_at", { mode: "timestamp" }), // §2.5:最近一次敏感操作重驗時間
   createdAt: now("created_at"),
 }, (t) => ({ userIdx: index("s_user").on(t.userId) }));
 
@@ -135,6 +139,8 @@ export const agreementLogs = sqliteTable("agreement_logs", {
   version: text("version").notNull(),
   ip: text("ip").notNull(),
   userAgent: text("user_agent").notNull().default(""),
+  prevHash: text("prev_hash").notNull().default(""), // §5.2:雜湊鏈,竄改即斷鏈可偵測
+  hash: text("hash").notNull().default(""),
   signedAt: now("signed_at"),
 }, (t) => ({ userDocIdx: index("ag_user_doc").on(t.userId, t.docType) }));
 
@@ -169,5 +175,72 @@ export const auditLogs = sqliteTable("audit_logs", {
   targetType: text("target_type").notNull().default(""),
   targetId: text("target_id").notNull().default(""),
   meta: text("meta").notNull().default("{}"),
+  prevHash: text("prev_hash").notNull().default(""), // §5.2:雜湊鏈
+  hash: text("hash").notNull().default(""),
   createdAt: now("created_at"),
 }, (t) => ({ timeIdx: index("al_time").on(t.createdAt) }));
+
+// ── §2.3 登入速率限制與階梯式鎖定 ──────────────────────────
+// 正式環境可換 Redis(高頻寫入/自動過期更合適),介面收斂在 repositories/ratelimit.ts,
+// 頁面與 Server Action 一律不直接碰這張表。
+
+export const loginAttempts = sqliteTable("login_attempts", {
+  id: id(),
+  email: text("email").notNull(),
+  ip: text("ip").notNull(),
+  ok: integer("ok", { mode: "boolean" }).notNull(),
+  createdAt: now("created_at"),
+}, (t) => ({
+  emailTimeIdx: index("la_email_time").on(t.email, t.createdAt),
+  ipTimeIdx: index("la_ip_time").on(t.ip, t.createdAt),
+}));
+
+// ── §3.3 應用層列舉偵測 ──────────────────────────────────
+// 記錄「誰在什麼時間存取了哪個資源」,用於偵測「短時間內存取大量不同教授檔案」
+// 這類爬取特徵的行為模式,而非依賴容易被繞過的 IP 層防禦。
+
+export const accessEvents = sqliteTable("access_events", {
+  id: id(),
+  actorKey: text("actor_key").notNull(), // 已登入:userId;未登入:session-less 匿名 key(見 anti-scrape.ts)
+  resourceType: text("resource_type").notNull(), // PROFESSOR | POSTING | SUBFIELD
+  resourceId: text("resource_id").notNull(),
+  createdAt: now("created_at"),
+}, (t) => ({ actorTimeIdx: index("ae_actor_time").on(t.actorKey, t.createdAt) }));
+
+// ── §8 安全事件與告警(區別於一般業務稽核 auditLogs)──────────
+
+export const securityEvents = sqliteTable("security_events", {
+  id: id(),
+  type: text("type").notNull(), // login.rate_limited | login.locked | enum.detected | honeypot.triggered | authz.denied | integrity.broken | admin.step_up
+  severity: text("severity").notNull().default("medium"), // low | medium | high
+  actorId: text("actor_id").references(() => users.id),
+  ip: text("ip").notNull().default(""),
+  detail: text("detail").notNull().default("{}"), // 只放結構化中繼資料,絕不放明文機敏內容(密碼/驗證碼/訊息內文)
+  createdAt: now("created_at"),
+}, (t) => ({ typeTimeIdx: index("se_type_time").on(t.type, t.createdAt) }));
+
+// ── §3.4 條件式人機驗證通過紀錄 ────────────────────────────
+// 只在 §3.3 判定 risk=hard 時才要求驗證,通過後在時效內免重複驗證。
+// verifyToken 只存雜湊,不存明文(與 session token 同慣例)。
+
+export const humanChecks = sqliteTable("human_checks", {
+  id: id(),
+  actorKey: text("actor_key").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  createdAt: now("created_at"),
+}, (t) => ({ actorIdx: index("hc_actor").on(t.actorKey) }));
+
+// ── §2.5 管理員敏感調閱雙人核可 ──────────────────────────
+
+export const dualApprovals = sqliteTable("dual_approvals", {
+  id: id(),
+  requesterId: text("requester_id").notNull().references(() => users.id),
+  action: text("action").notNull(), // 欲執行的動作代碼,如 audit.view_sensitive
+  targetType: text("target_type").notNull().default(""),
+  targetId: text("target_id").notNull().default(""),
+  status: text("status").notNull().default("pending"), // pending | approved | rejected | expired
+  approverId: text("approver_id").references(() => users.id),
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  createdAt: now("created_at"),
+}, (t) => ({ statusIdx: index("da_status").on(t.status, t.createdAt) }));
