@@ -92,3 +92,97 @@ export const groupPostSchema = z.object({ groupId: z.string().min(1), body: z.st
 export const suggestTagsSchema = z.object({ professorId: z.string().min(1) });
 export const summarizeSchema = z.object({ applicationId: z.string().min(1) });
 export const addSpecialtySchema = z.object({ professorId: z.string().min(1), subfieldId: z.string().min(1) });
+
+// ── 白皮書 2.1 二維模型:教授/單位發布新需求(2026-08 新增)──────────────
+export const createPostingSchema = z.object({
+  category: z.enum(["TA", "RA", "LAB", "EXT"]), // DEPT 改由單位帳號發布,見 createUnitPostingSchema
+  title: z.string().min(4, "標題至少 4 字").max(200),
+  description: z.string().min(20, "需求說明至少 20 字").max(5000),
+});
+
+// 白皮書 2.5.3:單位帳號發布(系辦短期 DEPT / 校內工讀 WORK_STUDY),結構化必填欄位。
+export const createUnitPostingSchema = z.object({
+  category: z.enum(["DEPT", "WORK_STUDY"]),
+  title: z.string().min(4, "標題至少 4 字").max(200),
+  description: z.string().min(20, "需求說明至少 20 字").max(5000),
+  wage: z.string().min(1, "請填寫時薪/月薪").max(100),
+  weeklyHoursAndTerm: z.string().min(1, "請填寫每週工時、聘期起訖").max(200),
+  laborInsurance: z.string().min(1, "請填寫勞健保投保方式").max(200),
+  workLocationAndContent: z.string().min(1, "請填寫工作地點、工作內容").max(1000),
+  contact: z.string().min(1, "請填寫聯繫方式").max(200),
+  eligibility: z.string().max(300).default(""), // 資格限制,白皮書標為選填(無勾選必填)
+});
+
+// 白皮書 2.4.1:碩博生自行發布需求找幫手,報酬形式與所屬指導教授為必填(課責用非核准)。
+export const createGradHelperPostingSchema = z.object({
+  title: z.string().min(4, "標題至少 4 字").max(200),
+  description: z.string().min(20, "需求說明至少 20 字").max(5000),
+  compensationType: z.enum(["HOURLY", "CREDIT", "COAUTHOR", "UNPAID"]),
+  advisorName: z.string().min(1, "請填寫所屬指導教授").max(100),
+});
+
+// 白皮書 2.6.2:學生合作專區六分區共用欄位。
+export const createStudentCollabPostingSchema = z.object({
+  category: z.enum(["CLUB_RECRUIT", "TEAM_UP", "PROJECT_COLLAB", "EVENT_ORG", "STARTUP_IDEA", "OTHER_COLLAB"]),
+  title: z.string().min(4, "標題至少 4 字").max(200),
+  description: z.string().min(20, "詳細說明至少 20 字").max(5000),
+  rolesNeeded: z.string().min(1, "請填寫需要的角色與人數").max(300),
+  deadline: z.string().min(1, "請填寫時程與截止日"),
+  needsProfessorGuidance: z.enum(["on", "off"]).default("off").transform((v) => v === "on"),
+  compensationNote: z.string().max(500).default(""),
+});
+
+// ── 白皮書 2.3.1「可受理的學生請求」五項設定區(2026-08 新增)────────────
+export const intakeSettingSchema = z.object({
+  type: z.enum(["REC", "UR", "LAB_JOIN", "EXT_ENDORSE", "COLLAB_GUIDE"]),
+  enabled: z.enum(["on", "off"]).transform((v) => v === "on"),
+  conditionText: z.string().max(500).default(""),
+  quotaNote: z.string().max(200).default(""),
+});
+
+// ── 白皮書 2.9 推薦信 / 2.10 大專生計畫等「學生 → 教授」請求(2026-08 新增)────
+// payload 依 type 各自定義必填欄位,不用同一組欄位硬套四種情境(白皮書明定四類欄位不同)。
+const recPayloadSchema = z.object({
+  purpose: z.string().min(5, "請說明推薦信目的(至少 5 字)").max(300),
+  deadline: z.string().max(30).default(""),
+  subject: z.string().min(15, "請求信主旨至少 15 字(含過去學經歷與希望協助的原因)").max(2000),
+});
+const urPayloadSchema = z.object({
+  proposal: z.string().min(30, "研究構想至少 30 字").max(3000),
+});
+const labJoinPayloadSchema = z.object({
+  motivation: z.string().min(15, "動機與背景至少 15 字").max(2000),
+  availability: z.string().max(500).default(""),
+});
+const extEndorsePayloadSchema = z.object({
+  projectName: z.string().min(2, "請填寫計畫名稱").max(200),
+  sponsor: z.string().min(2, "請填寫計畫來源/單位(如學海築夢、TOP1000 等)").max(200),
+  detail: z.string().min(15, "說明至少 15 字").max(2000),
+});
+
+const REQUEST_PAYLOAD_SCHEMAS: Record<string, z.ZodTypeAny> = {
+  REC: recPayloadSchema, UR: urPayloadSchema, LAB_JOIN: labJoinPayloadSchema, EXT_ENDORSE: extEndorsePayloadSchema,
+};
+
+/** 依請求類型挑選對應的 payload schema 驗證(§2.1 四類學生發起事由,各自必填欄位不同)。 */
+export function parseRequestPayload(type: string, raw: unknown) {
+  const schema = REQUEST_PAYLOAD_SCHEMAS[type];
+  if (!schema) return { success: false as const, error: { issues: [{ message: "未知的請求類型。" }] } };
+  return schema.safeParse(raw);
+}
+
+export const studentRequestSchema = z.object({
+  professorId: z.string().min(1),
+  type: z.enum(["REC", "UR", "LAB_JOIN", "EXT_ENDORSE"]),
+  payload: z.string().default("{}"), // JSON 字串,實際欄位驗證見 parseRequestPayload
+});
+
+export const respondRequestSchema = z.object({
+  requestId: z.string().min(1),
+  decision: z.enum(["accept", "decline", "want_to_talk"]),
+});
+
+export const finalizeRecommendationSchema = z.object({
+  requestId: z.string().min(1),
+  outcome: z.enum(["sent", "declined_after_accept"]),
+});

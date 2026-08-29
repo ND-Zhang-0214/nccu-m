@@ -6,20 +6,29 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { currentUser, hasSignedTerms, signTerms, requestIp, logout, currentSession, markSessionStepUp } from "@/server/auth";
 import { TERMS_VERSION } from "@/server/terms";
-import { createApplication, getPosting, updateApplicationStatus } from "@/server/repositories/postings";
+import { createApplication, createPosting, getPosting, updateApplicationStatus } from "@/server/repositories/postings";
 import { audit, createReport, resolveReport, getReport } from "@/server/repositories/audit";
 import { setProfessorVerify, getProfessor } from "@/server/repositories/professors";
 import { notify, markAllRead } from "@/server/repositories/notifications";
 import { setPersonaCookie, type Persona } from "@/server/persona";
-import { requireUser, requireAdmin, requireApplicationStatusEditor, requireConversationMember, requireActiveUser } from "@/server/authz";
+import {
+  requireUser, requireAdmin, requireApplicationStatusEditor, requireConversationMember, requireActiveUser,
+  requireOwnProfessorProfile, requireRequestResponder,
+} from "@/server/authz";
 import {
   applySchema, reportSchema, applicationStatusSchema, reportDecisionSchema,
   professorVerifySchema, personaSchema, sendMessageSchema, startConversationSchema,
   setStatusSchema, addContactSchema, discloseContactSchema, requestApprovalSchema,
   decideApprovalSchema, totpVerifySchema, createSlotsSchema, bookSlotSchema,
   createGroupSchema, inviteMemberSchema, groupPostSchema, suggestTagsSchema,
-  summarizeSchema, addSpecialtySchema,
+  summarizeSchema, addSpecialtySchema, createPostingSchema, intakeSettingSchema,
+  studentRequestSchema, parseRequestPayload, respondRequestSchema, finalizeRecommendationSchema,
 } from "@/server/schemas";
+import { REQUEST_TYPES, REQUEST_STATUS_LABELS } from "@/shared/categories";
+import {
+  getIntakeSetting, upsertIntakeSetting, createStudentRequest, hasActiveRequest,
+  respondToRequest, finalizeRecommendation,
+} from "@/server/repositories/student-requests";
 import {
   getOrCreateConversationForApplication, confirmConversationByApplication, sendMessage,
   setMemberStatus, setUserContact, deleteUserContact, discloseContact, ConversationLimitError,
@@ -420,7 +429,9 @@ export async function createSlotsAction(formData: FormData) {
   if (!parsed.success) return;
   const user = await requireSlotManager(parsed.data.postingId);
   const posting = await getPosting(parsed.data.postingId);
-  if (!posting) return;
+  // 面試時段僅適用教授發起的需求(見 postings/[id]/applications/page.tsx 的 UI 限制);
+  // 這裡是伺服器端的第二層把關,防止有人繞過前端直接對單位/學生發起的需求造出時段。
+  if (!posting || posting.posterType !== "PROFESSOR" || !posting.professorId) return;
   await createSlots(parsed.data.postingId, posting.professorId, [{
     startAt: new Date(parsed.data.startAt), endAt: new Date(parsed.data.endAt), location: parsed.data.location,
   }]);
@@ -582,4 +593,124 @@ export async function stepUpTotpAction(formData: FormData) {
   if (session) await markSessionStepUp(session.id);
   await logSecurityEvent("admin.step_up", "low", user.id, "", { result: "ok" });
   redirect(next);
+}
+
+// ── 白皮書 2.1 二維模型:教授/單位發布新需求(2026-08 新增)──────────────
+// 先前版本只有種子資料建立的示範需求,教授端沒有實際發布介面;此為補上的發布入口。
+
+export async function createPostingAction(_prev: unknown, formData: FormData) {
+  const { user, professorId } = await requireOwnProfessorProfile();
+  const parsed = createPostingSchema.safeParse({
+    category: formData.get("category"), title: formData.get("title"), description: formData.get("description"),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const posting = await createPosting({ posterType: "PROFESSOR", professorId, ...parsed.data });
+  await audit(user.id, "posting.create", "POSTING", posting.id, { category: parsed.data.category });
+  revalidatePath("/postings");
+  revalidatePath("/professor/dashboard");
+  redirect(`/postings/${posting.id}`);
+}
+
+// ── 白皮書 2.3.1「可受理的學生請求」五項設定區(2026-08 新增)────────────
+// 技術原則(白皮書明文):五項開關由同一支函式帶不同參數處理,故此處只有一個 action,
+// 靠表單裡的 type 欄位分流,不為五項各寫一支。
+
+export async function updateIntakeSettingAction(formData: FormData) {
+  const { user, professorId } = await requireOwnProfessorProfile();
+  const parsed = intakeSettingSchema.safeParse({
+    type: formData.get("type"),
+    enabled: formData.get("enabled") ? "on" : "off",
+    conditionText: formData.get("conditionText") || "",
+    quotaNote: formData.get("quotaNote") || "",
+  });
+  if (!parsed.success) return;
+  await upsertIntakeSetting(professorId, parsed.data.type, {
+    enabled: parsed.data.enabled, conditionText: parsed.data.conditionText, quotaNote: parsed.data.quotaNote,
+  });
+  await audit(user.id, "intake_setting.update", "PROFESSOR", professorId, { type: parsed.data.type, enabled: parsed.data.enabled });
+  revalidatePath("/professor/dashboard");
+}
+
+// ── 白皮書 2.9 推薦信 / 2.10 大專生計畫等「學生 → 教授」請求(2026-08 新增)────
+// 與 applyAction(學生應徵教授/單位廣播的需求)方向相反:這裡是學生主動對「特定教授」
+// 提出請求。三道防線與 applyAction 對齊:登入 → 帳號非唯讀 → 已簽署當版條款。
+
+export async function submitStudentRequestAction(_prev: unknown, formData: FormData) {
+  const user = await currentUser();
+  if (!user) return { error: "請先登入校內帳號。" };
+  if (user.status !== "ACTIVE") {
+    return { error: "此帳號目前為唯讀狀態(校友/休學/封存),無法送出新請求。" };
+  }
+  if (!(await hasSignedTerms(user.id, TERMS_VERSION))) {
+    return { error: "請先於「服務條款」頁完成本版本條款簽署,再送出請求。", needTerms: true };
+  }
+  const parsed = studentRequestSchema.safeParse({
+    professorId: formData.get("professorId"), type: formData.get("type"), payload: formData.get("payload") || "{}",
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+
+  // fail-closed:即使前端隱藏了關閉的項目,伺服器端仍重新核對教授是否真的開放此類型
+  const setting = await getIntakeSetting(parsed.data.professorId, parsed.data.type);
+  if (!setting?.enabled) return { error: "此教授目前未開放此類型的請求。" };
+
+  let rawPayload: Record<string, unknown> = {};
+  try { rawPayload = JSON.parse(parsed.data.payload); } catch { rawPayload = {}; }
+  const payloadParsed = parseRequestPayload(parsed.data.type, rawPayload);
+  if (!payloadParsed.success) return { error: payloadParsed.error.issues[0].message };
+
+  if (await hasActiveRequest(user.id, parsed.data.professorId, parsed.data.type)) {
+    return { error: "你已對這位教授提出過此類型的請求,待現有請求結案後才能再次發起。" };
+  }
+
+  const row = await createStudentRequest({
+    type: parsed.data.type, studentId: user.id, professorId: parsed.data.professorId, payload: payloadParsed.data,
+  });
+  await audit(user.id, "student_request.create", "STUDENT_REQUEST", row.id, { type: parsed.data.type });
+
+  const prof = await getProfessor(parsed.data.professorId);
+  if (prof?.prof.userId) {
+    await notify(prof.prof.userId, "student_request.new", "收到一則新的學生請求",
+      `類型:${REQUEST_TYPES[parsed.data.type]},前往查看並回應。`, "/professor/dashboard");
+  }
+  revalidatePath("/professor/dashboard");
+  return { ok: "請求已送出,教授回應後會通知你。" };
+}
+
+export async function respondToRequestAction(formData: FormData) {
+  const parsed = respondRequestSchema.safeParse({
+    requestId: formData.get("requestId"), decision: formData.get("decision"),
+  });
+  if (!parsed.success) return;
+  // requireRequestResponder 刻意排除發起請求的學生本人,同 requireApplicationStatusEditor 的道理。
+  const { user, request } = await requireRequestResponder(parsed.data.requestId);
+  try {
+    const updated = await respondToRequest(parsed.data.requestId, parsed.data.decision);
+    await audit(user.id, `student_request.${parsed.data.decision}`, "STUDENT_REQUEST", parsed.data.requestId);
+    await notify(request.studentId, "student_request.status",
+      `你的請求狀態更新:${REQUEST_STATUS_LABELS[updated.status] ?? updated.status}`,
+      `「${REQUEST_TYPES[request.type]}」的請求狀態已更新。`, "/me/requests");
+  } catch (e) {
+    // fail-closed:非法狀態轉換(如已回應過又再次回應)一律記錄,不靜默吞掉
+    await logSecurityEvent("authz.denied", "low", user.id, "", { resource: "STUDENT_REQUEST_RESPOND", reason: String(e) });
+  }
+  revalidatePath("/professor/dashboard");
+}
+
+/** 白皮書 2.9:推薦信專屬的「撰寫中 → 已送出 / 了解後婉拒」。其餘三類請求沒有這個中介狀態。 */
+export async function finalizeRecommendationAction(formData: FormData) {
+  const parsed = finalizeRecommendationSchema.safeParse({
+    requestId: formData.get("requestId"), outcome: formData.get("outcome"),
+  });
+  if (!parsed.success) return;
+  const { user, request } = await requireRequestResponder(parsed.data.requestId);
+  try {
+    const updated = await finalizeRecommendation(parsed.data.requestId, parsed.data.outcome);
+    await audit(user.id, `student_request.${parsed.data.outcome}`, "STUDENT_REQUEST", parsed.data.requestId);
+    await notify(request.studentId, "student_request.status",
+      `你的推薦信請求狀態更新:${REQUEST_STATUS_LABELS[updated.status] ?? updated.status}`,
+      "教授已更新推薦信撰寫進度。", "/me/requests");
+  } catch (e) {
+    await logSecurityEvent("authz.denied", "low", user.id, "", { resource: "STUDENT_REQUEST_FINALIZE", reason: String(e) });
+  }
+  revalidatePath("/professor/dashboard");
 }

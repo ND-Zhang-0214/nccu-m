@@ -57,7 +57,9 @@ export async function canOperatePosting(userId: string, postingId: string): Prom
   try {
     const posting = await getPosting(postingId);
     if (!posting) return false;
-    return posting.professor.userId === userId;
+    // posterUserId 統一解析「這則需求由哪個 users.id 管理」,不論發起方是教授/單位/學生
+    // (白皮書2.1 二維模型 2026-08 第二輪起支援三種發起方,見 repositories/postings.ts)。
+    return posting.posterUserId === userId;
   } catch {
     return false; // fail-closed
   }
@@ -178,4 +180,61 @@ export async function requireGroupOwner(groupId: string) {
     redirect("/groups");
   }
   return user;
+}
+
+// ── 白皮書 2.1/2.3.1/2.9/2.10:教授端「可受理的學生請求」與學生請求(2026-08 新增)──
+
+async function isProfessorAccountOwner(userId: string, professorId: string): Promise<boolean> {
+  try {
+    const { getProfessor } = await import("@/server/repositories/professors");
+    const data = await getProfessor(professorId);
+    return !!data && data.prof.userId === userId;
+  } catch {
+    return false; // fail-closed
+  }
+}
+
+/** 教授本人的教授檔案(用於發布需求、設定「可受理的學生請求」等僅教授本人可做的動作)。
+ *  刻意不讓 ADMIN 略過——這些是「代表某位教授」的動作,管理員沒有對應的教授身分可代入。 */
+export async function requireOwnProfessorProfile() {
+  const user = await requireActiveUser();
+  const { getProfessorByUserId } = await import("@/server/repositories/professors");
+  const prof = await getProfessorByUserId(user.id);
+  if (!prof) {
+    await logSecurityEvent("authz.denied", "medium", user.id, "", { resource: "PROFESSOR_PROFILE_SELF" });
+    redirect("/professor/dashboard");
+  }
+  return { user, professorId: prof.id };
+}
+
+/** 請求(student_requests)只有發起的學生本人、該教授本人、或管理員可查看(比照 requireApplicationAccess)。 */
+export async function requireRequestParticipant(requestId: string) {
+  const user = await requireUser();
+  const { getStudentRequest } = await import("@/server/repositories/student-requests");
+  const reqRow = await getStudentRequest(requestId);
+  if (!reqRow) redirect("/");
+  if (user.role === "ADMIN" || reqRow.studentId === user.id) return { user, request: reqRow };
+  const isOwner = await isProfessorAccountOwner(user.id, reqRow.professorId);
+  if (!isOwner) {
+    await logSecurityEvent("authz.denied", "high", user.id, "", { resource: "STUDENT_REQUEST", id: requestId });
+    redirect("/");
+  }
+  return { user, request: reqRow };
+}
+
+/** 回應請求(接受/婉拒/希望先談談/撰寫完成)專用守則:只允許該教授本人或管理員,
+ *  刻意排除發起請求的學生自己——與 requireApplicationStatusEditor 同一道理:不能自己核准自己。 */
+export async function requireRequestResponder(requestId: string) {
+  const user = await requireUser();
+  const { getStudentRequest } = await import("@/server/repositories/student-requests");
+  const reqRow = await getStudentRequest(requestId);
+  if (!reqRow) redirect("/");
+  const isOwner = await isProfessorAccountOwner(user.id, reqRow.professorId);
+  if (!isOwner && user.role !== "ADMIN") {
+    await logSecurityEvent("authz.denied", "high", user.id, "", {
+      resource: "STUDENT_REQUEST_RESPOND", id: requestId, note: "非該教授本人嘗試回應學生請求",
+    });
+    redirect("/");
+  }
+  return { user, request: reqRow };
 }

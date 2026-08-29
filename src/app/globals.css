@@ -175,8 +175,22 @@ table.plain th { color: var(--muted); font-weight: 500; font-size: 13px; }
 .status-pill { display: inline-block; font-size: 12px; padding: 3px 10px; border: 1px solid var(--hairline); }
 .status-pill.pending { color: var(--muted); }
 .status-pill.interview_invited, .status-pill.interviewed { border-color: var(--maple); color: var(--maple); }
-.status-pill.accepted { border-color: var(--pine); background: var(--pine); color: #fff; }
-.status-pill.rejected { color: var(--muted); text-decoration: line-through; }
+.status-pill.accepted, .status-pill.sent { border-color: var(--pine); background: var(--pine); color: #fff; }
+.status-pill.rejected, .status-pill.declined, .status-pill.declined_after_accept { color: var(--muted); text-decoration: line-through; }
+.status-pill.wants_to_talk, .status-pill.writing { border-color: var(--maple); color: var(--maple); }
+
+/* ── 白皮書 2.3.1 教授「可受理的學生請求」設定區(2026-08 新增)──────── */
+.intake-row { border: 1px solid var(--hairline); background: #fff; padding: 14px 16px; margin-bottom: 10px; }
+.intake-row .intake-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.intake-row .intake-head input[type="checkbox"] { width: 16px; height: 16px; }
+.intake-row .intake-head strong { font-size: 14.5px; }
+.intake-row .intake-fields { display: grid; gap: 8px; }
+.intake-row .intake-fields input { font-size: 13.5px; }
+.intake-note { font-size: 12px; color: var(--muted); margin: -4px 0 8px; }
+.request-card { border: 1px solid var(--hairline); background: #fff; padding: 14px 16px; margin-bottom: 10px; }
+.request-card .meta { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+.request-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.request-actions button { padding: 6px 12px; font-size: 13px; }
 .compare-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .compare-actions button { padding: 6px 12px; font-size: 13px; }
 

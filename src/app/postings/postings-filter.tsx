@@ -6,7 +6,7 @@ import { CATEGORIES } from "@/shared/categories";
 
 type Posting = {
   id: string; title: string; category: string;
-  professor: { displayName: string };
+  posterName: string;
 };
 
 export function PostingsFilter({ postings }: { postings: Posting[] }) {
@@ -37,7 +37,7 @@ export function PostingsFilter({ postings }: { postings: Posting[] }) {
             <Link href={`/postings/${p.id}`}>
               <span>{p.title}</span>
               <span className="badge cat">{CATEGORIES[p.category]}</span>
-              <span className="count">{p.professor.displayName}</span>
+              <span className="count">{p.posterName}</span>
             </Link>
           </li>
         ))}

@@ -18,10 +18,20 @@ const now = (col: string) => integer(col, { mode: "timestamp" }).notNull().defau
 export const users = sqliteTable("users", {
   id: id(), // 內部 ID:不具業務意義,永不對外顯示
   email: text("email").notNull().unique(),
-  displayName: text("display_name").notNull(), // 平台暱稱(對外顯示)
-  role: text("role").notNull().default("STUDENT_BACHELOR"), // STUDENT_BACHELOR | STUDENT_GRAD | PROFESSOR | ADMIN
+  displayName: text("display_name").notNull(), // 平台暱稱(對外顯示,可申請修改,見 2.2.2)
+  // 白皮書 2.2.2:真實姓名(demo 環境無 iNCCU 可回傳,建立帳號時以當下 displayName 為預設值,
+  // 之後 displayName 若被使用者修改,realName 不跟著動——保留「內部可查證的原始姓名」語意,
+  // 供稽核/檢舉查證使用,不對外顯示)。
+  realName: text("real_name").notNull().default(""),
+  role: text("role").notNull().default("STUDENT_BACHELOR"), // STUDENT_BACHELOR | STUDENT_GRAD | PROFESSOR | UNIT | ADMIN
   subRoles: text("sub_roles").notNull().default("[]"), // JSON array;權限判斷取聯集
   status: text("status").notNull().default("ACTIVE"), // ACTIVE | PENDING | SUSPENDED | ALUM | ARCHIVED
+  // 白皮書 2.2.3 學制標記:自填、預設未驗證,唯一有實質差異之處是「可否自行發布需求找幫手」
+  // (見 postingVersions 旁的 GRAD_HELPER 類別與 authz.ts 的 requireVerifiedGradStudent)。
+  // 刻意不取代既有的 role=STUDENT_GRAD(避免大改既有判斷式),兩個訊號並存、任一為真即視為研究生,
+  // 這裡新增的是白皮書要求的「自填+未驗證標示+特定功能才需驗證」路徑。
+  degreeLevel: text("degree_level"), // null | BACHELOR | MASTER | PHD(使用者自填)
+  degreeLevelVerifiedAt: integer("degree_level_verified_at", { mode: "timestamp" }), // 由指導教授確認後寫入,見 2.2.3
   totpSecretEnc: text("totp_secret_enc"), // §2.5:管理員 2FA 種子(加密儲存,見 crypto.ts)
   totpEnabled: integer("totp_enabled", { mode: "boolean" }).notNull().default(false),
   // ── 帳號生命週期自動化(架構書 §帳號生命週期)──
@@ -49,6 +59,14 @@ export const sessions = sqliteTable("sessions", {
   expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(), // §2.4:絕對逾時
   lastUsedAt: now("last_used_at"), // §2.4:閒置逾時判斷依據
   stepUpAt: integer("step_up_at", { mode: "timestamp" }), // §2.5:最近一次敏感操作重驗時間
+  // 白皮書 3.2.5「登入裝置清單與強制登出」:純粹顯示用資訊,不作為安全判斷依據
+  // (偽造 User-Agent 很容易,這裡只是方便使用者自己辨認「這是不是我的裝置」)。
+  userAgent: text("user_agent").notNull().default(""),
+  createdIp: text("created_ip").notNull().default(""),
+  // 白皮書 1.5/2.2.1「登入來源可抽換」:記錄此 session 是透過哪個身分提供者建立,
+  // 見 src/server/auth/providers.ts。目前只有一種(mock-email-code),先寫入欄位是為了
+  // 將來真的接上 iNCCU 時,可以不動 schema 就分辨新舊 session 的來源。
+  provider: text("provider").notNull().default("mock-email-code"),
   createdAt: now("created_at"),
 }, (t) => ({ userIdx: index("s_user").on(t.userId) }));
 
@@ -108,21 +126,68 @@ export const professorSpecialties = sqliteTable("professor_specialties", {
   subIdx: index("ps_sub").on(t.subfieldId),
 }));
 
-// ── 需求與申請(五類:TA/DEPT/UR/REC/IND)───────────────────
+// ── 需求與申請(白皮書 2.1「事由 × 發起方」二維模型─廣播式需求)──────────
+// 2026-08 重構:移除 IND(產學跨域,已依白皮書 1.3 排除範圍定案不做)。
+// UR(大專生計畫)、REC(推薦信)兩類改為「學生發起」,不再由教授/單位以 posting 廣播,
+// 詳見下方 studentRequests。本表現在僅保留「教授/單位 → 學生」方向的四類 + 新增 RA。
+// TA(課程助教,教授)| RA(研究助理,教授)| LAB(實驗室成員招募,教授)|
+// DEPT(系辦短期校內工讀,現況仍由教授帳號代發,真正的「單位帳號」角色見白皮書 2.5,尚未實作) |
+// EXT(校外計畫指導教授,教授於有名額時公布)
+
+// 白皮書 2.5「單位帳號」(系辦、職涯中心等)。刻意比照 professorProfiles 掛在單一 users 帳號下
+// (2.5.1「允許多處同時登入」講的是同一組帳密多人共用,不是每個承辦人各自開帳號),
+// 差別在於單位沒有目錄瀏覽身分,只用來發布 postings(見下方 posterType)。
+export const unitProfiles = sqliteTable("unit_profiles", {
+  id: id(),
+  userId: text("user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(), // 如「外文系系辦」「職涯發展中心」
+  contactEmail: text("contact_email").notNull(),
+  extension: text("extension").notNull().default(""),
+  createdAt: now("created_at"),
+});
 
 export const postings = sqliteTable("postings", {
   id: id(),
-  professorId: text("professor_id").notNull().references(() => professorProfiles.id, { onDelete: "cascade" }),
-  category: text("category").notNull(), // TA | DEPT | UR | REC | IND
+  // 白皮書 2.1「事由 × 發起方」:發起方不再只能是教授。posterType 決定下面三個發起人欄位
+  // 哪一個有值,其餘為 null——三選一而非各開一張子表,是因為 applications/interviewSlots/
+  // attachments 等下游表都只認 postingId,不想讓下游程式碼還要分岔處理「這是誰發的」。
+  posterType: text("poster_type").notNull().default("PROFESSOR"), // PROFESSOR | UNIT | STUDENT
+  professorId: text("professor_id").references(() => professorProfiles.id, { onDelete: "cascade" }),
+  unitId: text("unit_id").references(() => unitProfiles.id, { onDelete: "cascade" }),
+  studentPosterId: text("student_poster_id").references(() => users.id, { onDelete: "cascade" }),
+  // TA/RA/LAB/EXT(posterType=PROFESSOR)| DEPT/WORK_STUDY(posterType=UNIT)|
+  // GRAD_HELPER(posterType=STUDENT,白皮書2.4)| CLUB_RECRUIT/TEAM_UP/PROJECT_COLLAB/
+  // EVENT_ORG/STARTUP_IDEA/OTHER_COLLAB(posterType=STUDENT,白皮書2.6 學生合作專區六分區)
+  category: text("category").notNull(),
   title: text("title").notNull(),
   description: text("description").notNull(),
+  // 白皮書 2.5.3/2.6.2:工讀職缺與學生合作專區都有各自的結構化欄位,不want五花八門另開很多張
+  // 只用得到一次的表,沿用 studentRequests.payload 已經在用的「類別專屬 JSON 欄位」慣例。
+  structuredFields: text("structured_fields").notNull().default("{}"),
   isOpen: integer("is_open", { mode: "boolean" }).notNull().default(true),
   closedReason: text("closed_reason").notNull().default(""), // 空字串=手動關閉;professor_relinquished 等=系統自動關閉
+  // 白皮書 2.8.1 編輯歷史:每次編輯遞增,搭配 postingVersions 表記錄「編輯前」快照。
+  currentVersion: integer("current_version").notNull().default(1),
   createdAt: now("created_at"),
 }, (t) => ({
   openCatIdx: index("po_open_cat").on(t.isOpen, t.category),
   profIdx: index("po_prof").on(t.professorId),
+  unitIdx: index("po_unit").on(t.unitId),
+  studentIdx: index("po_student").on(t.studentPosterId),
 }));
+
+// 白皮書 2.8.1/2.8.2:貼文編輯歷史。存的是「編輯前」的內容(即這個版本號實際生效的期間是
+// 從上一版編輯時間到這次編輯時間),配合 postings.currentVersion 可還原任一時間點的完整內容。
+export const postingVersions = sqliteTable("posting_versions", {
+  id: id(),
+  postingId: text("posting_id").notNull().references(() => postings.id, { onDelete: "cascade" }),
+  versionNumber: integer("version_number").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  structuredFields: text("structured_fields").notNull().default("{}"),
+  editedByUserId: text("edited_by_user_id").notNull().references(() => users.id),
+  editedAt: now("edited_at"),
+}, (t) => ({ postingIdx: index("pv_posting").on(t.postingId, t.versionNumber) }));
 
 export const applications = sqliteTable("applications", {
   id: id(),
@@ -132,6 +197,9 @@ export const applications = sqliteTable("applications", {
   motivation: text("motivation").notNull(),
   motivationSummary: text("motivation_summary").notNull().default(""), // AI 摘要,需教授主動觸發產生,不自動跑
   payload: text("payload").notNull().default("{}"), // 類別專屬欄位(JSON)
+  // 白皮書 2.8.1 附帶要求(前段註記):貼文可能在有人申請後被編輯,若發生糾紛需要能對照
+  // 「申請當下貼文長什麼樣子」,因此記錄申請當下的 postings.currentVersion。
+  appliedAtVersion: integer("applied_at_version").notNull().default(1),
   createdAt: now("created_at"),
   statusUpdatedAt: integer("status_updated_at", { mode: "timestamp" }), // 學期報告「平均審核時間」統計用
 }, (t) => ({
@@ -376,13 +444,45 @@ export const attachments = sqliteTable("attachments", {
   id: id(),
   ownerId: text("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   applicationId: text("application_id").references(() => applications.id, { onDelete: "cascade" }),
+  // 白皮書 2.7.2 群組共用檔案區:刻意沿用同一張 attachments 表(同一套 magic-number 型別檢查、
+  // 同一套下載 token 機制),而不是另開一張 groupFiles 表——applicationId/groupId 兩者恰好
+  // 互斥(申請附件屬於某個申請;群組檔案屬於某個群組),下游的下載/刪除邏輯只需多判斷一個欄位。
+  groupId: text("group_id").references(() => groups.id, { onDelete: "cascade" }),
   originalName: text("original_name").notNull().default(""), // 僅供顯示用,絕不用作儲存路徑(防路徑穿越)
   storedFilename: text("stored_filename").notNull().unique(), // 系統隨機產生,與原始檔名無關
   mimeType: text("mime_type").notNull(), // 依 magic number 偵測結果,不採信使用者端聲稱的 Content-Type
   sizeBytes: integer("size_bytes").notNull(),
   scanStatus: text("scan_status").notNull().default("pending"), // pending | clean | infected | error
   createdAt: now("created_at"),
-}, (t) => ({ ownerIdx: index("att_owner").on(t.ownerId), appIdx: index("att_app").on(t.applicationId) }));
+}, (t) => ({
+  ownerIdx: index("att_owner").on(t.ownerId),
+  appIdx: index("att_app").on(t.applicationId),
+  groupIdx: index("att_group").on(t.groupId),
+}));
+
+// 白皮書 2.12.2 使用者隱藏(靜音,非阻斷):單向、不對稱、被隱藏方不知情。
+export const userHides = sqliteTable("user_hides", {
+  id: id(),
+  hiderUserId: text("hider_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  hiddenUserId: text("hidden_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: now("created_at"),
+}, (t) => ({
+  uq: uniqueIndex("uh_pair").on(t.hiderUserId, t.hiddenUserId),
+  hiderIdx: index("uh_hider").on(t.hiderUserId),
+  hiddenIdx: index("uh_hidden").on(t.hiddenUserId),
+}));
+
+// 白皮書 2.13 資料匯出:比照 icsTokens 的一次性連結慣例(只存雜湊、有效期、可查詢是否已領取)。
+// 未實作原文提到的「匯出時另設密碼保護壓縮檔」——原文自己在該密碼是否可更改留了問號、
+// 屬未定案細節,本輪簡化為「連結本身即為時效存取憑證」,已在交付文件中誠實註明此簡化。
+export const dataExportTokens = sqliteTable("data_export_tokens", {
+  id: id(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  downloadedAt: integer("downloaded_at", { mode: "timestamp" }),
+  createdAt: now("created_at"),
+}, (t) => ({ userIdx: index("det_user").on(t.userId) }));
 
 // 時效簽名下載連結(§5.2 呼應,不給永久公開網址)。tokenHash 只存雜湊,與 session 同慣例。
 export const fileDownloadTokens = sqliteTable("file_download_tokens", {
@@ -405,3 +505,45 @@ export const dualApprovals = sqliteTable("dual_approvals", {
   expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(), // 「待核可」本身的過期時間(逾時未核可自動失效)
   createdAt: now("created_at"),
 }, (t) => ({ statusIdx: index("da_status").on(t.status, t.createdAt) }));
+
+// ── 白皮書 §2.3.1「可受理的學生請求」五項設定區(2026-08 新增)───────────
+// 技術原則(白皮書明文要求):五項開關由同一支函式帶不同參數實作,不分別寫五套邏輯——
+// 落地方式即為本表:每位教授最多五列(每種 type 一列),而非五張獨立表。
+// REC(撰寫推薦信)| UR(指導大專生研究計畫)| LAB_JOIN(加入實驗室/指導畢業專題)|
+// EXT_ENDORSE(擔任校外計畫指導教授)| COLLAB_GUIDE(指導學生合作專案——本項僅存開關,
+// 實際請求流程要等白皮書 2.6 學生合作專區模組上線才會有出口,屬誠實的範圍界定,非遺漏)
+export const professorIntakeSettings = sqliteTable("professor_intake_settings", {
+  id: id(),
+  professorId: text("professor_id").notNull().references(() => professorProfiles.id, { onDelete: "cascade" }),
+  type: text("type").notNull(), // REC | UR | LAB_JOIN | EXT_ENDORSE | COLLAB_GUIDE
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+  conditionText: text("condition_text").notNull().default(""), // 教授自訂條件文字,如「修過我的課且成績 B+ 以上」
+  quotaNote: text("quota_note").notNull().default(""), // 教授自行填寫的名額描述,如「每學期 2 封(已撰寫 1 封)」;白皮書明定為教授自填,非系統計數
+  updatedAt: now("updated_at"),
+}, (t) => ({
+  profTypeUq: uniqueIndex("pis_prof_type").on(t.professorId, t.type),
+}));
+
+// ── 白皮書 §2.9 推薦信 / §2.10 大專生計畫 等「學生 → 教授」請求(2026-08 新增)──────
+// 對應白皮書 2.1 二維模型中「學生發起」的四類事由。與 postings/applications(教授或
+// 單位廣播、學生應徵)方向相反:此處是學生主動對「特定教授」提出請求,教授逐一回應。
+// 狀態機刻意做成單一共用機制,REC 多出 writing/sent 兩個結尾前狀態,其餘三類直接停在
+// accepted/declined(白皮書僅 REC 明確定義「撰寫中」的中介狀態,UR/LAB_JOIN/EXT_ENDORSE
+// 的後續指導關係走平台外既有程序,不在本平台追蹤撰寫進度)。
+//   pending → wants_to_talk ┐
+//   pending ─────────────────┼→ accepted ─(僅 REC)→ writing → sent
+//                             │                              └→ declined_after_accept
+//                             └→ declined
+export const studentRequests = sqliteTable("student_requests", {
+  id: id(),
+  type: text("type").notNull(), // REC | UR | LAB_JOIN | EXT_ENDORSE
+  studentId: text("student_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  professorId: text("professor_id").notNull().references(() => professorProfiles.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("pending"),
+  payload: text("payload").notNull().default("{}"), // 類別專屬欄位(JSON),如 REC 的目的/截止日/主旨
+  createdAt: now("created_at"),
+  statusUpdatedAt: integer("status_updated_at", { mode: "timestamp" }),
+}, (t) => ({
+  profStatusIdx: index("sr_prof_status").on(t.professorId, t.status),
+  studentIdx: index("sr_student").on(t.studentId, t.createdAt),
+}));

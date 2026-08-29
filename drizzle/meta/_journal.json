@@ -64,6 +64,20 @@
       "when": 1784548813340,
       "tag": "0008_mean_madame_masque",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788042263747,
+      "tag": "0009_colorful_mach_iv",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1788046164962,
+      "tag": "0010_dashing_moon_knight",
+      "breakpoints": true
     }
   ]
 }

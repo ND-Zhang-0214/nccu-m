@@ -14,7 +14,7 @@ export default async function PostingPage({ params, searchParams }: { params: { 
   const posting = await getPosting(params.id);
   if (!posting) notFound();
   const user = await currentUser();
-  const isOwner = !!user && (posting.professor.userId === user.id || user.role === "ADMIN");
+  const isOwner = !!user && (posting.posterUserId === user.id || user.role === "ADMIN");
   const myApplication = user && !isOwner ? await getMyApplicationForPosting(params.id, user.id) : null;
   return (
     <>
@@ -25,8 +25,10 @@ export default async function PostingPage({ params, searchParams }: { params: { 
       </nav>
       <h1>{posting.title}<span className="badge cat">{CATEGORIES[posting.category]}</span></h1>
       <p className="lede">
-        發布者:<Link href={`/professors/${posting.professorId}`}>{posting.professor.displayName}</Link>
-        ・{posting.professor.title}
+        發布者:{posting.posterHref ? (
+          <Link href={posting.posterHref}>{posting.posterName}</Link>
+        ) : posting.posterName}
+        {posting.professor && `・${posting.professor.title}`}
       </p>
       {/* §3.2 分級曝光:需求全文需登入才顯示,免登入僅見標題/分類/發布者(已在上方) */}
       {user ? (

@@ -54,24 +54,27 @@ async function main() {
   }
 
   console.log("→ 建立示範需求與管理員帳號 …");
+  // 白皮書 2.1 二維模型(2026-08 重構):postings 只保留「教授/單位 → 學生」四類廣播式需求
+  // (TA/RA/LAB/DEPT/EXT);IND(產學跨域)已依 1.3 排除範圍移除;UR/REC 改為學生發起,
+  // 種子資料改在下方以 studentRequests 呈現,不再是 postings。
   const allProfs = await db.select().from(t.professorProfiles);
   const p2 = allProfs[1]?.id ?? firstProfId;
   const p3 = allProfs[2]?.id ?? firstProfId;
   await db.insert(t.postings).values([
-    {
-      professorId: firstProfId, category: "UR",
-      title: "【示範】大專生計畫:跨語言句法比較研究",
-      description: "此為示範資料。誠徵對句法學有興趣之大學部學生,協助語料標註與文獻整理。",
-    },
     {
       professorId: firstProfId, category: "TA",
       title: "【示範】語言學概論 課程助教",
       description: "此為示範資料。需批改作業並主持每週討論課。",
     },
     {
-      professorId: p2, category: "REC",
-      title: "【示範】推薦信申請窗口:語言學研究所方向",
-      description: "此為示範資料。申請國內外語言學研究所推薦信,請附目標學校與截止日。",
+      professorId: firstProfId, category: "RA",
+      title: "【示範】研究助理:語料庫標註計畫",
+      description: "此為示範資料。協助建置與標註跨語言句法語料庫,需細心與基本統計能力。",
+    },
+    {
+      professorId: p2, category: "LAB",
+      title: "【示範】實驗室成員招募:語音與認知實驗室",
+      description: "此為示範資料。誠徵長期投入之大學部/碩士生加入實驗室,參與例會與資料蒐集。",
     },
     {
       professorId: p3, category: "DEPT",
@@ -79,9 +82,9 @@ async function main() {
       description: "此為示範資料。研討會期間協助報到與接待,每日彈性排班。",
     },
     {
-      professorId: p2, category: "IND",
-      title: "【示範】產學跨域:語音技術使用者研究",
-      description: "此為示範資料。與業界合作之語音介面易用性研究,需簽保密承諾。",
+      professorId: p2, category: "EXT",
+      title: "【示範】校外計畫指導教授:教育部學海築夢",
+      description: "此為示範資料。有名額時開放,協助銜接海外語言學研究交流計畫。",
     },
   ]);
 
@@ -103,6 +106,44 @@ async function main() {
   await db.update(t.professorProfiles)
     .set({ userId: profUser.id, verifyStatus: "APPROVED" })
     .where(eq(t.professorProfiles.id, firstProfId));
+
+  console.log("→ 建立示範「可受理的學生請求」設定與示範請求(§2.3.1/§2.9)…");
+  // 示範教授開放推薦信與大專生計畫,p2 開放加入實驗室,示範學生分辨不同狀態的樣貌。
+  await db.insert(t.professorIntakeSettings).values([
+    {
+      professorId: firstProfId, type: "REC", enabled: true,
+      conditionText: "修過我的課且成績 B+ 以上,至少需在截止日的兩週前告知。",
+      quotaNote: "每學期 2 封(已撰寫 0 封)",
+    },
+    {
+      professorId: firstProfId, type: "UR", enabled: true,
+      conditionText: "需先繳交一頁研究構想。",
+      quotaNote: "每年 1 組",
+    },
+    { professorId: firstProfId, type: "LAB_JOIN", enabled: false, conditionText: "", quotaNote: "" },
+    { professorId: firstProfId, type: "EXT_ENDORSE", enabled: false, conditionText: "", quotaNote: "" },
+    { professorId: firstProfId, type: "COLLAB_GUIDE", enabled: false, conditionText: "", quotaNote: "" },
+    {
+      professorId: p2, type: "LAB_JOIN", enabled: true,
+      conditionText: "歡迎大學部二年級以上、對語音認知有興趣的學生,先email簡短自我介紹。",
+      quotaNote: "不限制",
+    },
+  ]);
+
+  const [demoStudent] = await db.insert(t.users).values({
+    email: "student.demo@g.nccu.edu.tw",
+    displayName: "示範學生本人帳號",
+    role: "STUDENT_BACHELOR",
+    subRoles: JSON.stringify([]),
+  }).returning();
+  await db.insert(t.studentRequests).values({
+    type: "REC", studentId: demoStudent.id, professorId: firstProfId, status: "pending",
+    payload: JSON.stringify({
+      purpose: "申請美國 OO 大學語言學研究所",
+      deadline: "2026-11-15",
+      subject: "此為示範資料。修過老師的語言學概論與句法學,成績皆為 A,對計算語言學特別感興趣,希望老師能就課堂表現與期末專題協助撰寫推薦信。",
+    }),
+  });
 
   console.log("✓ 種子資料建立完成");
 }

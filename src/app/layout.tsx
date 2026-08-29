@@ -48,6 +48,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   <Link href="/browse">依領域瀏覽</Link>
                   <Link href="/postings">開放需求</Link>
                   {user && <Link href="/me/applications">我的申請</Link>}
+                  {user && <Link href="/me/requests">我的請求</Link>}
                   {user && <Link href="/me/reports">我的檢舉</Link>}
                   {user && <Link href="/messages">訊息</Link>}
                   {user && <Link href="/groups">群組</Link>}

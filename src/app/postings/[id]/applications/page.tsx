@@ -19,12 +19,15 @@ export default async function ApplicationsComparePage({ params }: { params: { id
   if (!posting) notFound();
   const user = await currentUser();
   if (!user) redirect("/login");
-  const isOwner = posting.professor.userId === user.id;
+  const isOwner = posting.posterUserId === user.id;
   if (!isOwner && user.role !== "ADMIN") redirect("/");
 
   const applications = await listApplicationsForPosting(params.id);
-  const slots = await listSlotsByProfessor(posting.professorId);
-  const mySlots = slots.filter((s) => s.postingId === params.id);
+  // 面試時段預約(白皮書 2.3 教授端功能)僅適用教授發起的需求;單位工讀、學生合作專區
+  // 走一般申請+站內訊息即可,沒有「面試時段」這個概念,故此區塊限教授發起的需求才顯示。
+  const mySlots = posting.posterType === "PROFESSOR" && posting.professorId
+    ? (await listSlotsByProfessor(posting.professorId)).filter((s) => s.postingId === params.id)
+    : [];
 
   return (
     <>
@@ -36,6 +39,7 @@ export default async function ApplicationsComparePage({ params }: { params: { id
       <h1>{posting.title}<span className="badge cat">{CATEGORIES[posting.category]}</span></h1>
       <p className="lede">共 {applications.length} 份申請,並排比較後可直接更新狀態。</p>
 
+      {posting.posterType === "PROFESSOR" && (
       <details style={{ marginBottom: 24 }}>
         <summary style={{ cursor: "pointer" }}>面試時段管理({mySlots.length} 個時段)</summary>
         <div style={{ marginTop: 12 }}>
@@ -65,6 +69,7 @@ export default async function ApplicationsComparePage({ params }: { params: { id
           <form action={getIcsLinkAction}><p><button className="secondary">取得行事曆訂閱連結</button></p></form>
         </div>
       </details>
+      )}
 
       {applications.length === 0 ? (
         <p className="lede">目前還沒有申請。</p>

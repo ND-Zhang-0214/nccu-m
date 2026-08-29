@@ -27,7 +27,7 @@ export default async function Home() {
             <Link href={`/postings/${p.id}`}>
               <span>{p.title}</span>
               <span className="badge cat">{CATEGORIES[p.category]}</span>
-              <span className="count">{p.professor.displayName}</span>
+              <span className="count">{p.posterName}</span>
             </Link>
           </li>
         ))}

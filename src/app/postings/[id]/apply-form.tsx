@@ -21,10 +21,10 @@ export function ApplyForm({ postingId, category }: { postingId: string; category
 
   const categoryPrompt: Record<string, string> = {
     TA: "相關成績、修過的課程、可協助批改或帶討論的能力",
+    RA: "與研究相關的技能、可配合的時段、過去的研究或助理經驗",
+    LAB: "對實驗室研究方向的興趣、可投入時間、相關背景",
     DEPT: "可配合的時段、曾協助過的行政工作經驗",
-    UR: "初步的研究題目構想、已具備的研究方法或工具能力",
-    REC: "申請的目標學校/單位、截止日期、希望信中強調的重點",
-    IND: "跨領域動機、與此需求相關的作品或經驗",
+    EXT: "跨領域動機、與此計畫相關的作品或經驗",
   };
 
   const motivation =

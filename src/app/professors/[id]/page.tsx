@@ -4,6 +4,8 @@ import { getProfessor } from "@/server/repositories/professors";
 import { CATEGORIES } from "@/server/repositories/postings";
 import { guardAgainstScraping } from "@/server/anti-scrape";
 import { currentUser } from "@/server/auth";
+import { getIntakeSettingsForProfessor } from "@/server/repositories/student-requests";
+import { REQUEST_TYPES, INTAKE_TYPES_WITH_REQUEST_FORM } from "@/shared/categories";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +15,8 @@ export default async function ProfessorPage({ params }: { params: { id: string }
   if (!data) notFound();
   const { prof, dept, college, specialties, openPostings } = data;
   const user = await currentUser();
+  const intakeSettings = (await getIntakeSettingsForProfessor(params.id))
+    .filter((s) => s.enabled && INTAKE_TYPES_WITH_REQUEST_FORM.includes(s.type));
   return (
     <>
       <nav className="crumbs">
@@ -57,6 +61,28 @@ export default async function ProfessorPage({ params }: { params: { id: string }
             </li>
           ))}
         </ul>
+      )}
+
+      {/* 白皮書 2.3.1:教授在個人檔案設定的五項開關,學生在此頁即可看見,無需詢問即知是否符合資格 */}
+      <h2>可提出的請求</h2>
+      {intakeSettings.length === 0 ? (
+        <p className="lede">此教授目前未開放任何學生主動請求項目(如推薦信、大專生計畫等)。</p>
+      ) : user ? (
+        <ul className="catalog">
+          {intakeSettings.map((s) => (
+            <li key={s.type}>
+              <Link href={`/professors/${params.id}/request/${s.type}`}>
+                <span>{REQUEST_TYPES[s.type]}{s.conditionText && <span className="lede" style={{ marginLeft: 8, fontSize: 12.5 }}>{s.conditionText}</span>}</span>
+                {s.quotaNote && <span className="count">{s.quotaNote}</span>}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="notice">
+          此教授開放 {intakeSettings.map((s) => REQUEST_TYPES[s.type]).join("、")} 等請求。
+          <Link href="/login">以校內信箱登入</Link>後可查看條件並提出請求。
+        </div>
       )}
     </>
   );

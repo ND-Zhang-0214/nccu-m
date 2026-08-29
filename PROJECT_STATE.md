@@ -4,7 +4,7 @@
 >
 > **給接手的 AI 模型看的第一句話:** 這是一個真實在開發中的專案,不是範例或練習。所有「已完成」項目都經過實際建置(`npm run build`)與功能驗證,不是只有程式碼存在。所有「未完成」項目都明確列出,不要假設它們已經做了。修改前先讀對應章節,不要整個專案重新設計。
 >
-> **最後更新:** 對應 git commit `e16a1af`(面試時段+ics/群組/AI/學期報告 那次)之後的獨立複查。全部 16 個 commit 涵蓋的功能本次都已重新驗證過(不是只信 commit 訊息的宣稱),詳見第三節與 `SECURITY_REVIEW.md`、`FUNCTIONAL_TEST_CHECKLIST.md`。
+> **最後更新:** 對應 git commit `de66b34`(資安複查報告/功能測試單那次)之後的一輪新開發:白皮書 §2.1「事由×發起方」二維模型正式落地——移除已排除範圍的 IND(產學跨域),新增 RA/LAB/EXT 三類教授端廣播需求,並新建「學生發起請求」整條垂直切片(§2.3.1/§2.9/§2.10:教授端受理開關 `professorIntakeSettings` + 學生請求 `studentRequests` + 完整生命週期)。本輪並用 Playwright 實際開真實瀏覽器複查,抓到一個先前 16 個 commit 都未發現、會讓全站「use client」元件完全無法互動的 CSP 設定缺陷,已修正並重新驗證,詳見 `SECURITY_REVIEW.md`。
 
 ---
 
@@ -14,7 +14,12 @@
 
 **發起人背景:** 政大三年級學生(英文系+全球經濟治理雙主修),有學生自治經驗與 TWSE ESG 審查實務經驗。目標是先做出雛型,爭取校方資源(SSO 對接、學籍系統介接、校內主機、法律諮詢),長期擴展至台聯大、全國。
 
-**核心範圍決策(定案,不要重新討論):** 僅限校內研究媒合。明確排除企業徵才/求職、付費訂閱、廣告、一般民眾註冊、公開問答牆、積分排行榜。五類申請管道:TA(課程助教)、DEPT(系辦短期)、UR(大專生計畫)、REC(推薦信)、IND(產學跨域)。
+**核心範圍決策(定案,不要重新討論):** 僅限校內研究媒合。明確排除企業徵才/求職、付費訂閱、廣告、一般民眾註冊、公開問答牆、積分排行榜。
+
+**2026-08 更新——申請管道改依白皮書 §2.1「事由×發起方」二維模型分成兩組(不要再用舊的「五類申請管道」講法):**
+- **教授/單位 → 學生(廣播式,`postings` 表,任何登入學生皆可見並申請):** TA(課程助教)、RA(研究助理)、LAB(實驗室成員招募)、DEPT(系辦短期)、EXT(校外計畫指導教授掛名)。
+- **學生 → 教授(結構化請求,`studentRequests` 表,一對一,教授需先在自己的「可受理的學生請求」開關開放才看得到入口):** REC(推薦信)、UR(大專生計畫)、LAB_JOIN(申請加入實驗室)、EXT_ENDORSE(校外計畫指導掛名申請)、COLLAB_GUIDE(學生合作專區引導,**僅有教授端開關,尚無學生端提交表單**,見第 3.5 節)。
+- **IND(產學跨域)已依白皮書 §1.3 排除範圍決議正式移除**,不要再實作或提及。
 
 ---
 
@@ -47,9 +52,11 @@
 - **啟動方式:** `npm install` → `npm run db:migrate` → `npm run db:seed` → `npm run dev`
 - **測試帳號:** `admin@nccu.edu.tw`(管理員)、`professor.demo@nccu.edu.tw`(已認領帳號的示範教授)、任意 `@g.nccu.edu.tw` 信箱(一般學生)。開發模式驗證碼直接顯示於登入頁畫面。
 
-### 3.2 已完成功能總覽(全部通過 `npm run build`,34 個路由,型別檢查全過)
+### 3.2 已完成功能總覽(全部通過 `npm run build`,39 個路由,型別檢查全過)
 
-**核心媒合功能:** 目錄瀏覽、教授檔案、五類需求發布與結構化申請、教授端並排比較申請+狀態機、檢舉機制、條款簽署存證、通知系統。
+**核心媒合功能:** 目錄瀏覽、教授檔案、需求發布與結構化申請(TA/RA/LAB/DEPT/EXT 五類,教授可於 `/postings/new` 自行發布)、教授端並排比較申請+狀態機、檢舉機制、條款簽署存證、通知系統。
+
+**§2.3.1/§2.9/§2.10 學生發起請求(2026-08 新增):** 教授於儀表板逐項開關「可受理的學生請求」(REC/UR/LAB_JOIN/EXT_ENDORSE/COLLAB_GUIDE)並填寫條件與名額說明;學生只在教授開放時才看得到對應請求連結(`/professors/[id]/request/[type]`),未開放時直接顯示「目前未開放」,即使直接改網址存取也一樣擋下(伺服器端重新驗證,不只是前端隱藏)。請求狀態機 `pending/wants_to_talk → accepted/declined`,REC 額外有 `writing → sent/declined_after_accept` 中介狀態。回應者守則 `requireRequestResponder` 明確排除請求發起學生本人(比照既有 `requireApplicationStatusEditor` 的 IDOR 防護模式)。學生可於 `/me/requests` 追蹤所有請求進度。COLLAB_GUIDE 目前只有教授端開關,無對應學生端表單(見 3.5 節)。
 
 **M4 站內訊息:** 對話(學生↔教授僅能透過已存在申請開啟,教授↔教授可直接發起)、忙碌/有空狀態雙方手動設定、每日新對話頻率上限、§5.1 聯絡方式加密(`user_contacts`)+ 對話內主動揭露留痕(`contact_disclosures`)。
 
@@ -74,9 +81,12 @@
 **已修正的真實漏洞(非規劃階段就避免,是負載測試時真的抓到的):**
 檔案上傳配額檢查與寫入原本分成兩步(先查詢目前用量、再寫入),高併發下會被繞過(N 個併發請求同時查到「還沒超額」,一起寫入超過配額)。修正為 `createAttachmentIfUnderQuota` 單一原子交易。本次複查用 25 個併發請求重新打過一次 20 次/小時的配額,資料庫實際筆數與磁碟檔案數精準等於 20,確認修正有效且沒有回歸。
 
+**2026-08 新發現並修正的真實缺陷(比上面那個更嚴重,而且是先前 16 個 commit 都沒抓到的):**
+`next.config.mjs` 原本寫死的靜態 CSP(`script-src 'self' https://challenges.cloudflare.com`,無 nonce/unsafe-inline)會擋掉 Next.js App Router 自己注入的 inline hydration `<script>`,導致**全站所有「use client」元件在真實瀏覽器下完全無法互動**——登入表單按下「取得驗證碼」沒反應、任何申請表單按下送出沒反應,等於整個產品在正式環境下無法使用。之所以先前 16 個 commit 都沒抓到,是因為 `SECURITY_REVIEW.md` 原本的 CSP 驗證方法是 `curl -I` 只檢查標頭存在,不會執行瀏覽器渲染,測不出「標頭存在但把自己網站擋掛了」這種問題。本輪改用 Playwright 實際開瀏覽器跑過完整登入與申請流程才發現。**修正方式**為 Next.js 官方建議的 nonce 模式:新增 `src/middleware.ts` 逐請求產生一次性 nonce 並寫入 CSP,移除 `next.config.mjs` 裡重複的靜態 CSP(避免兩份標頭疊加、瀏覽器取交集後 nonce 版本反而被無 nonce 版本卡住)。另外 `next dev` 的 webpack HMR 依賴 `eval()`,同一份 CSP 若不放寬會連開發模式都整個無法互動,因此 `middleware.ts` 對 `unsafe-eval` 做了 `NODE_ENV !== "production"` 條件式放寬,**正式建置的 CSP 嚴格度完全不受影響**(已用 `curl -I` 覆核正式模式標頭確實不含 `unsafe-eval`)。修正後用 Playwright 跑過教授/學生雙視角的完整互動流程(登入→簽署條款→發布需求→受理學生請求→學生送出請求→邊界情況擋下),18 項瀏覽器端斷言全數通過。詳細時序、根因與驗證證據見 `SECURITY_REVIEW.md`。
+
 ### 3.4 資料庫 schema 現況
 
-完整定義見 `src/server/db/schema.ts`,每張表皆有中文註解。目前共 27 張表,涵蓋身分/分類/需求/存證(原有)、資安(§2-5 speedwork:login_attempts/access_events/security_events/human_checks/dual_approvals)、訊息(conversations/conversation_members/messages/user_contacts/contact_disclosures)、檔案(attachments)、生命週期(account_lineage/professor_relinquishments,users 表補充 lifecycleBufferEndsAt/lifecycleNote 欄位)、面試(interview_slots/ics_tokens)、群組(groups/group_members/group_posts)、AI 留痕(如適用)。
+完整定義見 `src/server/db/schema.ts`,每張表皆有中文註解。目前實測共 36 張表(本次複查直接用 `grep -c "sqliteTable("` 重新算過,先前文件寫的「27 張」已經跟不上後幾輪 commit 新增的表,順手一併更正,避免繼續沿用舊數字),涵蓋身分/分類/需求/存證(原有)、資安(§2-5 speedwork:login_attempts/access_events/security_events/human_checks/dual_approvals)、訊息(conversations/conversation_members/messages/user_contacts/contact_disclosures)、檔案(attachments/file_download_tokens)、生命週期(account_lineage/professor_relinquishments,users 表補充 lifecycleBufferEndsAt/lifecycleNote 欄位)、面試(interview_slots/ics_tokens)、群組(groups/group_members/group_posts)、AI 留痕(如適用)、**2026-08 新增的學生請求流程(professor_intake_settings/student_requests)**。
 
 ### 3.5 已知範圍界定(誠實列出,不是遺漏)
 
@@ -84,6 +94,7 @@
 - 首頁「為你精選」是非個人化過渡版本(依最近開放需求輪替取樣)。
 - 唯讀帳號(ALUM/SUSPENDED/ARCHIVED)的寫入防護,目前是在 `applyAction`/`sendMessageAction`/`createGroupPostAction` 等處各自寫狀態檢查,沒有統一收斂成單一守則呼叫——每處都有檢查(逐一確認過),但屬程式碼一致性瑕疵,建議下次維護時處理。
 - 換 PostgreSQL 的路徑在 schema 設計上已考量,但未實際執行測試(此環境無 PostgreSQL 可測)。
+- **COLLAB_GUIDE(學生合作專區引導)只做了教授端的受理開關與條件說明欄位,沒有對應的學生端提交表單**——因為白皮書所述的「學生合作專區」模組本身還沒開發,開了收件開關也無處可送。這不是漏做,是刻意不讓使用者以為這條路已經通(儀表板上已用文字明確告知教授這一點)。等學生合作專區模組實際開發後,補一個跟 REC/UR/LAB_JOIN/EXT_ENDORSE 同一套 payload schema 機制的表單即可,`INTAKE_TYPES_WITH_REQUEST_FORM` 常數(`src/shared/categories.ts`)是唯一需要加入 `"COLLAB_GUIDE"` 的地方。
 
 ---
 
