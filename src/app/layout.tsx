@@ -1,26 +1,35 @@
 import "./globals.css";
 import Link from "next/link";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { currentUser } from "@/server/auth";
 import { getProfessorByUserId } from "@/server/repositories/professors";
+import { getUnitByUserId } from "@/server/repositories/units";
 import { countUnread } from "@/server/repositories/notifications";
 import { getPersona } from "@/server/persona";
 import { switchPersonaAction } from "@/app/actions";
+import { IntroAnimation } from "./intro-animation";
 
 export const metadata: Metadata = {
   title: "政大研究媒合平台",
   description: "校內研究媒合基礎設施:讓研究需求與人才在可驗證身分的環境中對接。",
 };
 
+// 白皮書 2.11.1「除了網頁版還要有好的手機版體驗」(PWA 不做,見專案決策紀錄):
+// 明確宣告 viewport,而不是依賴框架預設值,確保手機瀏覽器一律以裝置寬度渲染、
+// 不會被誤判成桌面版縮放顯示。
+export const viewport: Viewport = { width: "device-width", initialScale: 1 };
+
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const user = await currentUser();
   const prof = user ? await getProfessorByUserId(user.id) : null;
+  const unit = user ? await getUnitByUserId(user.id) : null;
   const unread = user ? await countUnread(user.id) : 0;
   const persona = getPersona();
 
   return (
     <html lang="zh-Hant-TW">
       <body>
+        <IntroAnimation />
         <header className="site-header">
           <div className="shell">
             <Link href="/" className="brand">
@@ -38,7 +47,16 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 </form>
               )}
 
-              {persona === "PROFESSOR" && prof ? (
+              {unit ? (
+                // 白皮書 2.5.2:單位帳號權限範圍僅「發布職缺、收取履歷、通知錄取結果」,
+                // 不可瀏覽教授資料——導覽列比照教授視角的精簡作法,但連「依領域瀏覽」都不給,
+                // 伺服器端也已在 blockUnitFromDirectory() 擋下直接輸入網址的情況。
+                <>
+                  <Link href="/unit/dashboard">單位儀表板</Link>
+                  <Link href="/messages">訊息</Link>
+                  <Link href="/me/settings">個人設定</Link>
+                </>
+              ) : persona === "PROFESSOR" && prof ? (
                 <>
                   <Link href="/professor/dashboard">我的儀表板</Link>
                   <Link href="/browse">依領域瀏覽</Link>
@@ -47,12 +65,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <>
                   <Link href="/browse">依領域瀏覽</Link>
                   <Link href="/postings">開放需求</Link>
+                  <Link href="/collab">學生合作專區</Link>
                   {user && <Link href="/me/applications">我的申請</Link>}
                   {user && <Link href="/me/requests">我的請求</Link>}
                   {user && <Link href="/me/reports">我的檢舉</Link>}
                   {user && <Link href="/messages">訊息</Link>}
                   {user && <Link href="/groups">群組</Link>}
                   {user && <Link href="/me/contacts">我的聯絡方式</Link>}
+                  {user && <Link href="/me/settings">個人設定</Link>}
                 </>
               )}
 

@@ -232,9 +232,46 @@ table.plain th { color: var(--muted); font-weight: 500; font-size: 13px; }
 /* ── 決策表 #12:為你精選 ──────────────────────────────── */
 .featured-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 16px; }
 
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* ── 白皮書 2.11.1:行動裝置響應式設計(PWA 不做,但仍需要良好的手機瀏覽器體驗;
+   .card-grid/.compare-grid/.featured-strip 已用 auto-fill+minmax 自動收成單欄,
+   窄螢幕下不需要再另外覆寫)──────────────────────────────── */
 @media (max-width: 640px) {
-  h1 { font-size: 24px; }
-  .site-header .shell { flex-wrap: wrap; gap: 10px 18px; }
-  .nav { margin-left: 0; flex-wrap: wrap; }
+  .shell { padding: 0 16px; }
+  h1 { font-size: 24px; margin: 28px 0 8px; }
+  h2 { font-size: 18px; margin: 28px 0 8px; }
+  .site-header .shell { flex-wrap: wrap; gap: 10px 18px; padding: 14px 16px; align-items: center; }
+  .nav { margin-left: 0; flex-wrap: wrap; gap: 10px 14px; font-size: 13.5px; }
+  .stepper-track { flex-wrap: wrap; gap: 10px 16px; }
+  button, .btn { padding: 10px 16px; }
+  /* 簡易統計/清單表格在窄螢幕一律改成可橫向捲動的區塊,避免欄位被硬擠到換行變形。
+     誠實標註:這裡用 display:block + overflow-x:auto 的 CSS-only 作法,而不是替
+     8 個頁面裡的每個 <table> 都包一層 wrapper div——對這些沒有 colspan/巢狀結構
+     的簡單表格而言效果等價,且能一次涵蓋全站,不需要逐頁修改 JSX。 */
+  table.plain { display: block; overflow-x: auto; white-space: nowrap; }
 }
+
+/* ── 白皮書 2.11.1:開場動畫(每個工作階段僅播放一次、可跳過、尊重減少動態效果、
+   不阻擋互動——元件本體與詳細設計取捨見 intro-animation.tsx)──────────── */
+.intro-overlay {
+  position: fixed; inset: 0; z-index: 999;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--paper);
+  pointer-events: none; /* 讓底下內容在動畫播放期間仍可直接互動,見 intro-animation.tsx */
+  animation: intro-fade-in .5s ease-out;
+}
+.intro-overlay-out { animation: intro-fade-out .4s ease-in forwards; }
+.intro-mark {
+  font-family: var(--serif); font-size: 30px; color: var(--pine);
+  letter-spacing: .04em; animation: intro-rise .7s ease-out;
+}
+.intro-skip {
+  position: absolute; bottom: 28px; right: 28px; pointer-events: auto;
+  background: transparent; color: var(--muted); border: 1px solid var(--hairline);
+  font-size: 13px; padding: 7px 16px;
+}
+.intro-skip:hover { border-color: var(--pine); color: var(--pine); background: transparent; }
+@keyframes intro-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes intro-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes intro-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
