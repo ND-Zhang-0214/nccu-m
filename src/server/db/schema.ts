@@ -454,6 +454,10 @@ export const attachments = sqliteTable("attachments", {
   sizeBytes: integer("size_bytes").notNull(),
   scanStatus: text("scan_status").notNull().default("pending"), // pending | clean | infected | error
   createdAt: now("created_at"),
+  // 白皮書 2.7.2:群組共用檔案「單檔僅保留一個月,到期前一週提醒」。僅群組檔案
+  // (groupId 非 null)會設定這兩欄;申請附件(applicationId)不設到期,維持原行為。
+  expiresAt: integer("expires_at", { mode: "timestamp" }),
+  expiryRemindedAt: integer("expiry_reminded_at", { mode: "timestamp" }), // 已提醒過,避免重複提醒
 }, (t) => ({
   ownerIdx: index("att_owner").on(t.ownerId),
   appIdx: index("att_app").on(t.applicationId),

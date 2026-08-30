@@ -5,10 +5,13 @@
 //   保留約半年才轉校友信箱)。這裡沒有真實信箱系統可接,偵測改為管理員手動觸發
 //   (markGraduationDetected),但「進入緩衝期 → 緩衝期到期自動轉為校友」這條轉換
 //   邏輯本身是真實運作的,不是裝飾。
-// - 「批次到期處理」在正式環境應由排程器(cron/Vercel Cron/GitHub Actions 排程)
-//   定期呼叫 processLifecycleTransitions();這裡沒有排程基礎設施,改為管理員在
-//   /admin/lifecycle 頁面手動按鈕觸發「執行今日批次」,函式本身的邏輯是真實的,
-//   只是觸發方式在此環境下是手動而非自動定時。
+// - 「批次到期處理」原本沒有排程基礎設施,只能在 /admin/lifecycle 頁面手動按鈕觸發。
+//   現已改接 src/server/scheduler.ts 的 node-cron 定時排程(預設每日凌晨 3 點自動執行,
+//   可用 LIFECYCLE_CRON_SCHEDULE 環境變數調整頻率,詳見該檔案的說明),/admin/lifecycle
+//   的按鈕保留作為「立即手動觸發一次」的補充功能(例如展示,或需要立刻套用某筆變更、
+//   不想等到下個排定時間時使用),兩者呼叫的都是這裡的 processLifecycleTransitions(),
+//   轉換邏輯完全一致,差別只在觸發來源——稽核紀錄的 actorId 會標示是排程觸發(null)
+//   還是哪一位管理員手動觸發。
 import { db } from "@/server/db/client";
 import * as t from "@/server/db/schema";
 import { and, eq, lte, ne } from "drizzle-orm";
@@ -28,8 +31,11 @@ export async function markGraduationDetected(userId: string, triggeredByAdminId:
     lifecycleNote: "偵測到可能已離校,進入畢業緩衝期",
   }).where(eq(t.users.id, userId));
   await audit(triggeredByAdminId, "lifecycle.graduation_detected", "USER", userId, { bufferEndsAt });
+  // 白皮書 2.13:原文的畢業前 90/60/30/7 天倒數提醒需要「預計畢業年月」欄位,本系統沒有
+  // 這個資料來源(詳見 data-export.ts 檔頭)。改在這個既有、真實會發生的轉換點提前提醒——
+  // 緩衝期通常長達 6 個月,足夠讓使用者從容匯出資料。
   await notify(userId, "lifecycle.graduation_buffer", "系統偵測到你可能已離校",
-    `緩衝期至 ${bufferEndsAt.toLocaleDateString("zh-TW")},期間權限不受影響,到期後帳號將轉為校友唯讀狀態。`, "/");
+    `緩衝期至 ${bufferEndsAt.toLocaleDateString("zh-TW")},期間權限不受影響,到期後帳號將轉為校友唯讀狀態。建議提早於「個人設定」匯出你的完整資料備份。`, "/me/settings");
 }
 
 /** 取消先前誤判的緩衝期(例如使用者其實還在學)。 */
@@ -44,7 +50,10 @@ export async function listUsersInBuffer() {
 }
 
 /** 批次處理:緩衝期已到期的帳號自動轉為 ALUM(唯讀)。回傳實際被轉換的帳號數。 */
-export async function processLifecycleTransitions(): Promise<{ toAlum: number; relinquishmentsClosed: number }> {
+export async function processLifecycleTransitions(): Promise<{
+  toAlum: number; relinquishmentsClosed: number; collabPostingsExpired: number;
+  groupFilesExpired: number; groupFilesReminded: number;
+}> {
   const now = new Date();
   const { isNotNull } = await import("drizzle-orm");
   const dueUsers = await db.select().from(t.users).where(and(
@@ -57,10 +66,97 @@ export async function processLifecycleTransitions(): Promise<{ toAlum: number; r
     await audit(null, "lifecycle.auto_transition_to_alum", "USER", u.id);
     await notify(u.id, "lifecycle.became_alum", "你的帳號已轉為校友狀態",
       "畢業緩衝期已結束,帳號轉為唯讀,可查看歷史紀錄但無法再發起新的媒合。", "/");
+
+    // 白皮書 2.13:「轉為 ALUM 後,產生封存檔,寄送僅含一次性下載連結的信件,連結 30 天到期」。
+    // 一次性連結本身即為存取憑證(見 data-export.ts 檔頭簡化說明);EMAIL 提醒比照
+    // group_file 到期提醒/auth.ts issueCode() 的既有 mock 慣例,以 audit 留下紀錄,
+    // demo 環境沒有真實寄信服務可接。站內通知(平台提醒)則是真的會出現在使用者通知列表。
+    const { issueExportToken } = await import("./data-export");
+    const exportToken = await issueExportToken(u.id);
+    await notify(u.id, "data_export.available", "你的一次性資料匯出連結已產生",
+      "帳號已轉為校友,系統已為你產生一次性資料匯出連結(30 天內有效,使用一次後即失效)。點此立即下載完整資料備份。",
+      `/api/export/${exportToken}`);
+    await audit(null, "data_export.graduation_email_mock", "USER", u.id, { to: u.email });
   }
 
   const relinquishClosed = await processRelinquishments();
-  return { toAlum: dueUsers.length, relinquishmentsClosed: relinquishClosed };
+  const collabExpired = await closeExpiredCollabPostings();
+  const groupFiles = await expireAndRemindGroupFiles();
+  return {
+    toAlum: dueUsers.length, relinquishmentsClosed: relinquishClosed, collabPostingsExpired: collabExpired,
+    groupFilesExpired: groupFiles.expired, groupFilesReminded: groupFiles.reminded,
+  };
+}
+
+/** 白皮書 2.7.2:群組共用檔案「單檔僅保留一個月,到期前一週提醒(平台提醒+EMAIL提醒)」。
+ *  「平台提醒」是真的運作的站內通知;「EMAIL 提醒」比照 auth.ts issueCode() 的既有取捨——
+ *  本環境沒有真實寄信服務可接(白皮書本身也註明此設定須寫入使用條款,屬將來要接的機制),
+ *  demo 環境改以 audit 留下「本應寄出一封提醒信」的紀錄(含收件信箱),正式環境要接上
+ *  真實寄信服務時,只需在下方標記處改為實際呼叫,呼叫端(本函式)完全不用改。
+ *  排程本身留待任務 #17(node-cron)接上,這裡先確保「到期就真的會刪除/提醒」這條邏輯
+ *  是可運作的,只是觸發時機目前仍是手動(/admin/lifecycle)或本函式的呼叫端。 */
+async function expireAndRemindGroupFiles(): Promise<{ expired: number; reminded: number }> {
+  const { listAttachmentsWithExpiry, deleteAttachment } = await import("./attachments");
+  const { listGroupMembers } = await import("./groups");
+  const { deleteFile } = await import("@/server/storage");
+  const { GROUP_FILE_REMINDER_BEFORE_MS } = await import("@/server/storage");
+
+  const now = Date.now();
+  const rows = await listAttachmentsWithExpiry(); // 目前僅群組檔案會設 expiresAt
+  let expired = 0, reminded = 0;
+
+  for (const att of rows) {
+    if (!att.groupId || !att.expiresAt) continue;
+    const expiresAtMs = att.expiresAt.getTime();
+
+    if (expiresAtMs <= now) {
+      await deleteFile(att.storedFilename);
+      await deleteAttachment(att.id);
+      await audit(null, "group_file.auto_expired", "ATTACHMENT", att.id, { groupId: att.groupId, originalName: att.originalName });
+      const members = await listGroupMembers(att.groupId);
+      for (const m of members) {
+        await notify(m.userId, "group_file.expired", "群組檔案已到期並自動刪除",
+          `「${att.originalName}」已超過一個月保存期限,已自動刪除且無法復原。`, `/groups/${att.groupId}`);
+      }
+      expired++;
+    } else if (expiresAtMs - now <= GROUP_FILE_REMINDER_BEFORE_MS && !att.expiryRemindedAt) {
+      await db.update(t.attachments).set({ expiryRemindedAt: new Date() }).where(eq(t.attachments.id, att.id));
+      const members = await listGroupMembers(att.groupId);
+      const expiresAtLabel = att.expiresAt.toLocaleDateString("zh-TW");
+      for (const m of members) {
+        await notify(m.userId, "group_file.expiring_soon", "群組檔案即將到期",
+          `「${att.originalName}」將於 ${expiresAtLabel} 到期並自動刪除,如需保留請自行下載備份。`, `/groups/${att.groupId}`);
+        // 正式環境:在此改為呼叫真實寄信服務(比照 auth.ts issueCode() 的既有標記慣例)。
+        await audit(null, "group_file.expiry_email_mock", "ATTACHMENT", att.id, { to: m.user?.email ?? "", groupId: att.groupId });
+      }
+      reminded++;
+    }
+  }
+  return { expired, reminded };
+}
+
+/** 白皮書 2.6.2:學生合作專區「時程與截止日」到期自動關閉——deadline 存在
+ *  postings.structuredFields.deadline(YYYY-MM-DD),到期即自動關閉,不算使用者主動
+ *  關閉,故 closedReason 標記為 deadline_expired 以便事後區分。只掃描 posterType=
+ *  STUDENT 的需求;沒有 deadline 欄位的(如碩博生自行發布需求)直接略過,不受影響。
+ *  比照本檔其餘批次函式的既有取捨:排程本身留待任務 #17(node-cron)接上,這裡先確保
+ *  「到期就真的會關閉」這條邏輯是可運作的,只是觸發時機目前仍是手動或本函式的呼叫端。 */
+async function closeExpiredCollabPostings(): Promise<number> {
+  const now = Date.now();
+  const open = await db.select().from(t.postings)
+    .where(and(eq(t.postings.isOpen, true), eq(t.postings.posterType, "STUDENT")));
+  let count = 0;
+  for (const p of open) {
+    let deadline: unknown;
+    try { deadline = JSON.parse(p.structuredFields || "{}").deadline; } catch { continue; }
+    if (typeof deadline !== "string" || !deadline) continue;
+    const deadlineMs = new Date(`${deadline}T23:59:59`).getTime();
+    if (Number.isNaN(deadlineMs) || deadlineMs > now) continue;
+    await db.update(t.postings).set({ isOpen: false, closedReason: "deadline_expired" }).where(eq(t.postings.id, p.id));
+    await audit(null, "posting.auto_closed_deadline", "POSTING", p.id);
+    count++;
+  }
+  return count;
 }
 
 // ── 休學/復學/退學 ────────────────────────────────────────
