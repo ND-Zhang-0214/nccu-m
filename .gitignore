@@ -5,3 +5,4 @@ dev.db-*
 .env
 *.log
 private-uploads/
+*.tsbuildinfo
