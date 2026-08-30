@@ -51,3 +51,11 @@ export async function listReportsByUser(reporterId: string) {
     .where(eq(t.reports.reporterId, reporterId))
     .orderBy(desc(t.reports.createdAt));
 }
+
+/** 取某個 action 最近一筆稽核紀錄,供頁面顯示「最近一次執行」用(如 /admin/lifecycle
+ *  顯示排程批次上次執行時間與結果——actorId 為 null 代表由排程觸發,否則為手動觸發的管理員)。 */
+export async function getLatestAuditLogByAction(action: string) {
+  const [row] = await db.select().from(t.auditLogs)
+    .where(eq(t.auditLogs.action, action)).orderBy(desc(t.auditLogs.createdAt)).limit(1);
+  return row ?? null;
+}

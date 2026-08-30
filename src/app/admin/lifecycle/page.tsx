@@ -1,6 +1,7 @@
 // 帳號生命週期管理(見 src/server/repositories/lifecycle.ts 檔頭關於偵測/排程的誠實範圍說明)
 import { requireAdmin } from "@/server/authz";
 import { listUsersInBuffer, listPendingRelinquishments } from "@/server/repositories/lifecycle";
+import { getLatestAuditLogByAction } from "@/server/repositories/audit";
 import {
   markGraduationAction, runLifecycleBatchAction, suspendAccountAction,
   restoreAccountAction, archiveAccountAction, initiateRelinquishmentAction, cancelRelinquishmentAction,
@@ -10,18 +11,35 @@ export const dynamic = "force-dynamic";
 
 export default async function LifecyclePage() {
   await requireAdmin("/admin/lifecycle");
-  const [inBuffer, relinquishments] = await Promise.all([listUsersInBuffer(), listPendingRelinquishments()]);
+  const [inBuffer, relinquishments, lastRun] = await Promise.all([
+    listUsersInBuffer(), listPendingRelinquishments(), getLatestAuditLogByAction("lifecycle.batch_run"),
+  ]);
+  let lastRunMeta: Record<string, unknown> = {};
+  try { lastRunMeta = lastRun ? JSON.parse(lastRun.meta) : {}; } catch { /* 忽略壞資料 */ }
 
   return (
     <>
       <h1>帳號生命週期</h1>
       <p className="lede">
-        偵測離校目前為管理員手動觸發(正式環境應接教務處 API 或信箱退信偵測);
-        批次到期處理目前為手動按鈕觸發(正式環境應接排程器)。轉換邏輯本身是真實運作的。
+        偵測離校目前為管理員手動觸發(正式環境應接教務處 API 或信箱退信偵測),轉換邏輯本身是真實運作的。
       </p>
+      <p className="lede">
+        批次到期處理(緩衝期到期轉校友 + 交接日到期關閉需求 + 群組檔案到期/提醒)已改為背景定時排程
+        自動執行,預設每日凌晨 3 點(見 src/server/scheduler.ts,可用環境變數調整頻率)。
+        下方按鈕保留作為「立即手動觸發一次」的補充功能,與排程呼叫的是同一支處理邏輯。
+      </p>
+      {lastRun ? (
+        <div className="notice ok" style={{ fontSize: 13.5 }}>
+          最近一次批次執行:{new Date(lastRun.createdAt).toLocaleString("zh-TW")}
+          {" "}・觸發來源:{lastRun.actorId ? "管理員手動觸發" : "定時排程自動觸發"}
+          {" "}・結果:{JSON.stringify(lastRunMeta)}
+        </div>
+      ) : (
+        <div className="notice" style={{ fontSize: 13.5 }}>尚未執行過任何一次批次(定時排程會在下一個排定時間自動執行,或使用下方按鈕立即觸發一次)。</div>
+      )}
 
       <form action={runLifecycleBatchAction}>
-        <p><button>執行今日生命週期批次(緩衝期到期轉校友 + 交接日到期關閉需求)</button></p>
+        <p><button>立即手動觸發一次批次(緩衝期到期轉校友 + 交接日到期關閉需求)</button></p>
       </form>
 
       <h2>手動觸發畢業偵測 / 帳號狀態變更</h2>

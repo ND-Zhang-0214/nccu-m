@@ -1,7 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // better-sqlite3 為原生模組,需列為外部套件
-  experimental: { serverComponentsExternalPackages: ["better-sqlite3"] },
+  // better-sqlite3 為原生模組,需列為外部套件。
+  // instrumentationHook:開啟 src/instrumentation.ts 的 register() 掛鉤(Next.js 14 此旗標
+  // 預設關閉,需顯式開啟),server process 啟動時據此啟動定時排程(見 server/scheduler.ts)。
+  experimental: { serverComponentsExternalPackages: ["better-sqlite3"], instrumentationHook: true },
 
   // §4.1、§4.2:全站安全回應標頭。
   // 2026-08 修正:Content-Security-Policy 原本寫死在這裡(無 nonce/unsafe-inline),
