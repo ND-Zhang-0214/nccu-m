@@ -4,27 +4,33 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
-import { currentUser, hasSignedTerms, signTerms, requestIp, logout, currentSession, markSessionStepUp } from "@/server/auth";
+import {
+  currentUser, hasSignedTerms, signTerms, requestIp, logout, currentSession, markSessionStepUp,
+  quickLoginDemo, isSafeNextPath,
+} from "@/server/auth";
 import { TERMS_VERSION } from "@/server/terms";
-import { createApplication, createPosting, getPosting, updateApplicationStatus } from "@/server/repositories/postings";
+import {
+  createApplication, createPosting, getPosting, updateApplicationStatus, editPosting, closePosting, reopenPosting,
+} from "@/server/repositories/postings";
 import { audit, createReport, resolveReport, getReport } from "@/server/repositories/audit";
 import { setProfessorVerify, getProfessor } from "@/server/repositories/professors";
 import { notify, markAllRead } from "@/server/repositories/notifications";
 import { setPersonaCookie, type Persona } from "@/server/persona";
 import {
   requireUser, requireAdmin, requireApplicationStatusEditor, requireConversationMember, requireActiveUser,
-  requireOwnProfessorProfile, requireRequestResponder,
+  requireOwnProfessorProfile, requireRequestResponder, requirePostingOwner, requireOwnUnitProfile,
 } from "@/server/authz";
+import { createUnitAccount } from "@/server/repositories/units";
 import {
   applySchema, reportSchema, applicationStatusSchema, reportDecisionSchema,
   professorVerifySchema, personaSchema, sendMessageSchema, startConversationSchema,
   setStatusSchema, addContactSchema, discloseContactSchema, requestApprovalSchema,
   decideApprovalSchema, totpVerifySchema, createSlotsSchema, bookSlotSchema,
-  createGroupSchema, inviteMemberSchema, groupPostSchema, suggestTagsSchema,
+  createGroupSchema, inviteMemberSchema, groupPostSchema, deleteGroupFileSchema, suggestTagsSchema,
   summarizeSchema, addSpecialtySchema, createPostingSchema, intakeSettingSchema,
   studentRequestSchema, parseRequestPayload, respondRequestSchema, finalizeRecommendationSchema,
 } from "@/server/schemas";
-import { REQUEST_TYPES, REQUEST_STATUS_LABELS } from "@/shared/categories";
+import { REQUEST_TYPES, REQUEST_STATUS_LABELS, DEMO_PERSONAS } from "@/shared/categories";
 import {
   getIntakeSetting, upsertIntakeSetting, createStudentRequest, hasActiveRequest,
   respondToRequest, finalizeRecommendation,
@@ -43,6 +49,15 @@ import { addProfessorSpecialty, listCandidateSubfieldsForProfessor, getProfessor
 import { requireSlotManager, requireGroupMember, requireGroupOwner } from "@/server/authz";
 import { getApplication as getApp } from "@/server/repositories/postings";
 import { db } from "@/server/db/client";
+import {
+  updateDisplayName, setDegreeLevel, revokeSession, hideUser, unhideUser,
+  verifyDegreeLevel, canCreateGradHelperPosting, getUserByEmail,
+} from "@/server/repositories/users";
+import {
+  updateDisplayNameSchema, setDegreeLevelSchema, revokeSessionSchema, hideUserSchema,
+  editPostingSchema, closePostingSchema, reopenPostingSchema, createUnitAccountSchema, createUnitPostingSchema,
+  createStudentCollabPostingSchema, verifyDegreeLevelSchema, createGradHelperPostingSchema,
+} from "@/server/schemas";
 import * as t from "@/server/db/schema";
 import { eq } from "drizzle-orm";
 
@@ -74,8 +89,10 @@ export async function applyAction(_prev: unknown, formData: FormData) {
     });
     await audit(user.id, "application.create", "APPLICATION", app.id);
     const posting = await getPosting(parsed.data.postingId);
-    if (posting?.professor.userId) {
-      await notify(posting.professor.userId, "application.new", "收到一則新申請",
+    // posterUserId(而非 professor.userId):單位/學生發起的需求 professor 為 null,
+    // 用 posterUserId 才能不論發起方是誰都正確通知到「該需求的管理者」。
+    if (posting?.posterUserId) {
+      await notify(posting.posterUserId, "application.new", "收到一則新申請",
         `「${posting.title}」有新的申請,前往查看並比較。`, `/postings/${posting.id}/applications`);
     }
   } catch (e: unknown) {
@@ -88,12 +105,34 @@ export async function applyAction(_prev: unknown, formData: FormData) {
   return { ok: "申請已送出。教授審核後會更新狀態。" };
 }
 
-export async function signTermsAction() {
+export async function signTermsAction(formData: FormData) {
   const user = await requireUser();
   const ua = headers().get("user-agent") || "";
   await signTerms(user.id, TERMS_VERSION, requestIp(), ua);
   await audit(user.id, "terms.sign", "TERMS", TERMS_VERSION);
-  redirect("/postings");
+  // 白皮書 2.11.4 登入門檻上線後,大多數簽署動作是從某個受保護頁面被 middleware/
+  // requireUser() 導來 /login → /terms 的路上帶著 next 參數,簽署完成理應直接送回
+  // 原本要去的地方,而不是一律導去 /postings(那是沒有 next 時的預設值,與改動前行為相同)。
+  const nextRaw = String(formData.get("next") || "");
+  redirect(isSafeNextPath(nextRaw) ? nextRaw : "/postings");
+}
+
+// 對應使用者需求「現在的版本要先設計一組虛擬可以直接通過的帳密或是登入方式讓我可以
+// present」:示範用一鍵登入表單的伺服器端處理。DEMO_PERSONAS 清單放在 shared/categories.ts
+// (client component 也需要引用來畫按鈕),這裡只認清單裡存在的 key,不接受任意 email——
+// 比外部直接接受任意輸入 + NODE_ENV 判斷更保守一層,即使有人繞過 UI 直接送表單也一樣。
+export async function quickLoginAction(formData: FormData) {
+  if (process.env.NODE_ENV === "production") redirect("/login");
+  const persona = DEMO_PERSONAS.find((p) => p.key === String(formData.get("persona") || ""));
+  const nextRaw = String(formData.get("next") || "");
+  const next = isSafeNextPath(nextRaw) ? nextRaw : "";
+  if (!persona) redirect(next ? `/login?next=${encodeURIComponent(next)}` : "/login");
+
+  const ua = headers().get("user-agent") || "";
+  const user = await quickLoginDemo(persona.email, { ip: requestIp(), userAgent: ua });
+  if (!user) redirect("/login"); // quickLoginDemo 在正式環境或信箱網域不符時回傳 null,雙重保險
+  await audit(user.id, "auth.quick_login_demo", "USER", user.id, { persona: persona.key });
+  redirect(`/terms${next ? `?next=${encodeURIComponent(next)}` : ""}`);
 }
 
 export async function logoutAction() {
@@ -135,6 +174,24 @@ export async function verifyProfessorAction(formData: FormData) {
   revalidatePath("/admin");
 }
 
+// 白皮書 2.5.1:單位帳號由管理員審核與分類建立(見 repositories/units.ts 的
+// createUnitAccount() 註解,說明「管理員直接建立」相對兩階段白名單流程的取捨)。
+export async function createUnitAccountAction(_prev: unknown, formData: FormData) {
+  const admin = await requireAdmin("/admin/units");
+  const parsed = createUnitAccountSchema.safeParse({
+    name: formData.get("name"), contactEmail: formData.get("contactEmail"), extension: formData.get("extension") || "",
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  try {
+    const unit = await createUnitAccount(parsed.data);
+    await audit(admin.id, "unit.create", "UNIT", unit.id, { name: parsed.data.name });
+  } catch (e) {
+    return { error: String(e instanceof Error ? e.message : "建立失敗,請確認信箱格式是否正確。") };
+  }
+  revalidatePath("/admin/units");
+  return { ok: "單位帳號已建立,該信箱現在可以直接以校內信箱登入使用。" };
+}
+
 export async function resolveReportAction(formData: FormData) {
   const admin = await requireAdmin("/admin");
   const parsed = reportDecisionSchema.safeParse({
@@ -158,8 +215,9 @@ export async function resolveReportAction(formData: FormData) {
         "管理員已完成審查,如需說明可聯絡管理員。", "/notifications");
     } else if (report.targetType === "POSTING") {
       const posting = await getPosting(report.targetId);
-      if (posting?.professor.userId) {
-        await notify(posting.professor.userId, "report.resolved", "有一則與你發布的需求相關的檢舉已結案",
+      // posterUserId:同上,單位/學生發起的需求 professor 為 null。
+      if (posting?.posterUserId) {
+        await notify(posting.posterUserId, "report.resolved", "有一則與你發布的需求相關的檢舉已結案",
           "管理員已完成審查,如需說明可聯絡管理員。", "/notifications");
       }
     }
@@ -194,6 +252,46 @@ export async function updateApplicationStatusAction(formData: FormData) {
   revalidatePath(`/postings/${app.postingId}/applications`);
 }
 
+// ── 需求編輯歷史 + 關閉機制(白皮書 2.8.1/2.8.3;requirePostingOwner 內建
+//    fail-closed 授權,非擁有者/管理員一律 redirect,不需要再自行判斷)────────
+
+export async function editPostingAction(_prev: unknown, formData: FormData) {
+  const parsed = editPostingSchema.safeParse({
+    postingId: formData.get("postingId"), title: formData.get("title"), description: formData.get("description"),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const user = await requirePostingOwner(parsed.data.postingId);
+  await editPosting(parsed.data.postingId, user.id, {
+    title: parsed.data.title, description: parsed.data.description,
+  });
+  await audit(user.id, "posting.edit", "POSTING", parsed.data.postingId);
+  revalidatePath(`/postings/${parsed.data.postingId}`);
+  revalidatePath(`/postings/${parsed.data.postingId}/history`);
+  return { ok: "已儲存修改,原內容已保留為歷史版本。" };
+}
+
+export async function closePostingAction(formData: FormData) {
+  const parsed = closePostingSchema.safeParse({
+    postingId: formData.get("postingId"), reason: formData.get("reason") || "",
+  });
+  if (!parsed.success) return;
+  const user = await requirePostingOwner(parsed.data.postingId);
+  await closePosting(parsed.data.postingId, parsed.data.reason);
+  await audit(user.id, "posting.close", "POSTING", parsed.data.postingId, { reason: parsed.data.reason });
+  revalidatePath(`/postings/${parsed.data.postingId}`);
+  revalidatePath("/postings");
+}
+
+export async function reopenPostingAction(formData: FormData) {
+  const parsed = reopenPostingSchema.safeParse({ postingId: formData.get("postingId") });
+  if (!parsed.success) return;
+  const user = await requirePostingOwner(parsed.data.postingId);
+  await reopenPosting(parsed.data.postingId);
+  await audit(user.id, "posting.reopen", "POSTING", parsed.data.postingId);
+  revalidatePath(`/postings/${parsed.data.postingId}`);
+  revalidatePath("/postings");
+}
+
 // ── 身分視角切換(對應決策表 #9;僅影響導覽顯示)──────────────
 
 export async function switchPersonaAction(formData: FormData) {
@@ -223,18 +321,19 @@ export async function startConversationAction(formData: FormData) {
   if (!app) redirect("/");
 
   const posting = await getPosting(app.postingId);
-  if (!posting?.professor.userId) redirect("/");
+  // posterUserId:同上,不論發起方是教授/單位/學生,一律用它解析「該需求的管理者」。
+  if (!posting?.posterUserId) redirect("/");
 
-  // 只有申請人本人或該需求的教授本人(或管理員)可以開啟這個對話,不透過會 redirect 的守則做流程控制
+  // 只有申請人本人或該需求的發起方本人(或管理員)可以開啟這個對話,不透過會 redirect 的守則做流程控制
   const isApplicant = app.applicantId === user.id;
-  const isOwner = posting.professor.userId === user.id;
+  const isOwner = posting.posterUserId === user.id;
   if (!isApplicant && !isOwner && user.role !== "ADMIN") {
     await logSecurityEvent("authz.denied", "high", user.id, "", { resource: "CONVERSATION_START", applicationId: app.id });
     redirect("/");
   }
 
   try {
-    const conv = await getOrCreateConversationForApplication(app.id, app.applicantId, posting.professor.userId);
+    const conv = await getOrCreateConversationForApplication(app.id, app.applicantId, posting.posterUserId);
     await audit(user.id, "conversation.start", "CONVERSATION", conv.id);
     redirect(`/messages/${conv.id}`);
   } catch (e) {
@@ -454,8 +553,10 @@ export async function bookSlotAction(formData: FormData) {
   }
   await audit(user.id, "interview_slot.book", "INTERVIEW_SLOT", result.id);
   const posting = await getPosting(app.postingId);
-  if (posting?.professor.userId) {
-    await notify(posting.professor.userId, "interview_slot.booked", "有人預約了面試時段",
+  // 面試時段目前僅教授發起的需求會有(createSlotsAction 已把關),posterUserId 在此
+  // 等同 professor.userId,但統一寫法比較不會在日後改動時又漏改一處。
+  if (posting?.posterUserId) {
+    await notify(posting.posterUserId, "interview_slot.booked", "有人預約了面試時段",
       `「${posting.title}」的一個面試時段已被預約。`, `/postings/${posting.id}/applications`);
   }
   revalidatePath(`/postings/${app.postingId}`);
@@ -466,6 +567,24 @@ export async function getIcsLinkAction() {
   const token = await issueIcsToken(user.id);
   await audit(user.id, "ics.token_issued");
   redirect(`/api/calendar/${token}`);
+}
+
+// 白皮書 2.13:個人設定「隨時可下載自己的完整資料」自助匯出。刻意用 requireUser()
+// 而非 requireActiveUser()——唯讀帳號(校友/休學/封存)正是最需要匯出資料的族群,
+// 不應該被排除在外。
+//
+// 刻意不在這裡直接 redirect() 到下載端點:實測 Next.js 對「表單 action 導向非頁面路由
+// (Route Handler)」的重新導向,client-side 嘗試失敗後會再退回觸發一次真正的瀏覽器硬
+// 導覽——對一次性連結(dataExportTokens 領取後即失效)而言等於送出兩次請求,第二次會
+// 拿到「已使用」,使用者第一次點擊就會看到錯誤。改為只回傳 token,由呼叫端(client
+// component,見 me/settings/data-export-button.tsx)以 window.location 觸發唯一一次
+// 真正的瀏覽器導覽。
+export async function requestDataExportAction(_prev: unknown, _formData: FormData) {
+  const user = await requireUser();
+  const { issueExportToken } = await import("@/server/repositories/data-export");
+  const token = await issueExportToken(user.id);
+  await audit(user.id, "data_export.self_service_issued", "USER", user.id);
+  return { token };
 }
 
 // ── M8 教授實驗室/計畫團隊群組(貼文一律不公開)────────────────
@@ -495,6 +614,27 @@ export async function createGroupPostAction(formData: FormData) {
   if (user.status !== "ACTIVE") return; // 唯讀帳號不可發文
   await createGroupPost(parsed.data.groupId, user.id, parsed.data.body);
   revalidatePath(`/groups/${parsed.data.groupId}`);
+}
+
+// 白皮書 2.7.2:群組共用檔案區,「成員可下載與刪除」——上傳走 api/files/upload/route.ts
+// (multipart,理由同既有履歷附件上傳,server action 不適合處理檔案二進位內容);這裡只處理
+// 刪除。下載沿用既有的 requestFileLinkAction,無須另寫一支(requireAttachmentAccess 已於
+// authz.ts 擴充群組成員可存取的分支)。
+export async function deleteGroupFileAction(formData: FormData) {
+  const parsed = deleteGroupFileSchema.safeParse({ attachmentId: formData.get("attachmentId") });
+  if (!parsed.success) return;
+  const { requireAttachmentAccess } = await import("@/server/authz");
+  const { user, att } = await requireAttachmentAccess(parsed.data.attachmentId);
+  // 這支 action 刻意只處理群組檔案:即使 requireAttachmentAccess 對非群組附件(如履歷)
+  // 也可能通過(上傳者本人/教授/管理員),此處仍必須擋下,避免這支「群組檔案刪除」
+  // 意外變成可以刪任何附件的通用入口,超出白皮書 2.7.2 的授權範圍。
+  if (!att.groupId) return;
+  const { deleteAttachment } = await import("@/server/repositories/attachments");
+  const { deleteFile } = await import("@/server/storage");
+  await deleteAttachment(att.id);
+  await deleteFile(att.storedFilename);
+  await audit(user.id, "group_file.delete", "ATTACHMENT", att.id, { groupId: att.groupId, originalName: att.originalName });
+  revalidatePath(`/groups/${att.groupId}`);
 }
 
 // ── AI 輔助(建議只能由教授手動確認後套用,絕不自動寫入)────────
@@ -611,6 +751,68 @@ export async function createPostingAction(_prev: unknown, formData: FormData) {
   redirect(`/postings/${posting.id}`);
 }
 
+// 白皮書 2.5.3:單位帳號發布系辦短期(DEPT)/校內工讀(WORK_STUDY),結構化欄位存入
+// structuredFields(見 createUnitPostingSchema 的欄位取捨說明)。
+export async function createUnitPostingAction(_prev: unknown, formData: FormData) {
+  const { user, unitId } = await requireOwnUnitProfile();
+  const parsed = createUnitPostingSchema.safeParse({
+    category: formData.get("category"), title: formData.get("title"), description: formData.get("description"),
+    wage: formData.get("wage"), weeklyHoursAndTerm: formData.get("weeklyHoursAndTerm"),
+    laborInsurance: formData.get("laborInsurance"), workLocationAndContent: formData.get("workLocationAndContent"),
+    qualificationRestriction: formData.get("qualificationRestriction") || "",
+    contact: formData.get("contact"), contactPersonName: formData.get("contactPersonName"),
+    staffExtension: formData.get("staffExtension"),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const { category, title, description, ...structuredFields } = parsed.data;
+  const posting = await createPosting({ posterType: "UNIT", unitId, category, title, description, structuredFields });
+  await audit(user.id, "posting.create", "POSTING", posting.id, { category, posterType: "UNIT" });
+  revalidatePath("/postings");
+  revalidatePath("/unit/dashboard");
+  redirect(`/postings/${posting.id}`);
+}
+
+// 白皮書 2.6:學生合作專區(學生對學生的合作邀集,六分區)。刻意排除單位帳號——
+// 2.5.2 單位帳號權限範圍只列了「發布職缺、收取履歷、通知錄取結果」,合作邀集不在其中。
+export async function createStudentCollabPostingAction(_prev: unknown, formData: FormData) {
+  const user = await requireActiveUser();
+  if (user.role === "UNIT") return { error: "單位帳號無法發布學生合作邀集。" };
+  const parsed = createStudentCollabPostingSchema.safeParse({
+    category: formData.get("category"), title: formData.get("title"), description: formData.get("description"),
+    rolesNeeded: formData.get("rolesNeeded"), deadline: formData.get("deadline"),
+    otherTypeLabel: formData.get("otherTypeLabel") || "",
+    needsProfessorGuidance: formData.get("needsProfessorGuidance") ? "on" : "off",
+    compensationNote: formData.get("compensationNote") || "",
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const { category, title, description, ...structuredFields } = parsed.data;
+  const posting = await createPosting({ posterType: "STUDENT", studentPosterId: user.id, category, title, description, structuredFields });
+  await audit(user.id, "posting.create", "POSTING", posting.id, { category, posterType: "STUDENT" });
+  revalidatePath("/collab");
+  redirect(`/postings/${posting.id}`);
+}
+
+// 白皮書 2.4.1:碩博生自行發布需求找幫手。canCreateGradHelperPosting 要求自填學制
+// 已經過教授驗證(見 verifyDegreeLevelAction),不是只要自填 MASTER/PHD 就放行。
+export async function createGradHelperPostingAction(_prev: unknown, formData: FormData) {
+  const user = await requireActiveUser();
+  if (!canCreateGradHelperPosting(user)) {
+    return { error: "需先由任一位教授確認你的碩士/博士學制,才能使用此功能(見「個人設定」)。" };
+  }
+  const parsed = createGradHelperPostingSchema.safeParse({
+    title: formData.get("title"), description: formData.get("description"),
+    compensationType: formData.get("compensationType"), advisorName: formData.get("advisorName"),
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const { title, description, ...structuredFields } = parsed.data;
+  const posting = await createPosting({
+    posterType: "STUDENT", studentPosterId: user.id, category: "GRAD_HELPER", title, description, structuredFields,
+  });
+  await audit(user.id, "posting.create", "POSTING", posting.id, { category: "GRAD_HELPER", posterType: "STUDENT" });
+  revalidatePath("/postings");
+  redirect(`/postings/${posting.id}`);
+}
+
 // ── 白皮書 2.3.1「可受理的學生請求」五項設定區(2026-08 新增)────────────
 // 技術原則(白皮書明文):五項開關由同一支函式帶不同參數處理,故此處只有一個 action,
 // 靠表單裡的 type 欄位分流,不為五項各寫一支。
@@ -713,4 +915,68 @@ export async function finalizeRecommendationAction(formData: FormData) {
     await logSecurityEvent("authz.denied", "low", user.id, "", { resource: "STUDENT_REQUEST_FINALIZE", reason: String(e) });
   }
   revalidatePath("/professor/dashboard");
+}
+
+// ── 白皮書 2.2.2/2.2.3/2.12.2/3.2.5 個人設定(2026-08 第二輪新增)──────────
+
+/** 白皮書 2.2.2:顯示名稱可申請修改,留紀錄;真實姓名(realName)不受影響。 */
+export async function updateDisplayNameAction(_prev: unknown, formData: FormData) {
+  const user = await requireActiveUser();
+  const parsed = updateDisplayNameSchema.safeParse({ displayName: formData.get("displayName") });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  await updateDisplayName(user.id, parsed.data.displayName);
+  revalidatePath("/me/settings");
+  return { ok: true };
+}
+
+/** 白皮書 2.2.3:學制自填,預設未驗證(僅在自行發布 GRAD_HELPER 需求時才需要驗證)。 */
+export async function setDegreeLevelAction(formData: FormData) {
+  const user = await requireActiveUser();
+  const parsed = setDegreeLevelSchema.safeParse({ degreeLevel: formData.get("degreeLevel") });
+  if (!parsed.success) return;
+  await setDegreeLevel(user.id, parsed.data.degreeLevel);
+  revalidatePath("/me/settings");
+}
+
+// 白皮書 2.2.3:碩博生要使用「自行發布需求找幫手」前需經教授確認學制——demo 環境簡化為
+// 任一位已認領帳號的教授皆可代為確認(白皮書原文本身也把驗證方式標成「可討論」)。
+export async function verifyDegreeLevelAction(_prev: unknown, formData: FormData) {
+  const { user: prof } = await requireOwnProfessorProfile();
+  const parsed = verifyDegreeLevelSchema.safeParse({ studentEmail: formData.get("studentEmail") });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const target = await getUserByEmail(parsed.data.studentEmail);
+  if (!target) return { error: "找不到此信箱對應的帳號(需為該使用者已至少登入過一次)。" };
+  if (target.degreeLevel !== "MASTER" && target.degreeLevel !== "PHD") {
+    return { error: "此帳號的學制標記尚未填寫或不是碩士/博士,請先請對方於個人設定填寫。" };
+  }
+  await verifyDegreeLevel(target.id, prof.id);
+  return { ok: `已確認 ${parsed.data.studentEmail} 的碩士/博士學制。` };
+}
+
+/** 白皮書 3.2.5:登入裝置清單與強制登出。只允許刪除自己的 session(repositories/users.ts 已比對 userId)。 */
+export async function revokeSessionAction(formData: FormData) {
+  const user = await requireUser();
+  const parsed = revokeSessionSchema.safeParse({ sessionId: formData.get("sessionId") });
+  if (!parsed.success) return;
+  await revokeSession(user.id, parsed.data.sessionId);
+  await logSecurityEvent("session.revoke", "low", user.id, "", { sessionId: parsed.data.sessionId });
+  revalidatePath("/me/settings");
+}
+
+/** 白皮書 2.12.2:使用者隱藏(靜音,非阻斷)。任何已登入使用者皆可對他人設定,無需 requireActiveUser
+ *  (唯讀帳號隱藏騷擾對象本來就該被允許,不屬於「產生新內容」的寫入動作)。 */
+export async function hideUserAction(formData: FormData) {
+  const user = await requireUser();
+  const parsed = hideUserSchema.safeParse({ targetUserId: formData.get("targetUserId") });
+  if (!parsed.success || parsed.data.targetUserId === user.id) return;
+  await hideUser(user.id, parsed.data.targetUserId);
+  revalidatePath("/messages");
+}
+
+export async function unhideUserAction(formData: FormData) {
+  const user = await requireUser();
+  const parsed = hideUserSchema.safeParse({ targetUserId: formData.get("targetUserId") });
+  if (!parsed.success) return;
+  await unhideUser(user.id, parsed.data.targetUserId);
+  revalidatePath("/me/settings");
 }

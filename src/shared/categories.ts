@@ -88,3 +88,50 @@ export const DEGREE_LEVEL_LABELS: Record<string, string> = {
   MASTER: "碩士",
   PHD: "博士",
 };
+
+// 白皮書 2.4.1:GRAD_HELPER 報酬形式的顯示文字。集中放在這裡讓「發布表單」與
+// 「需求詳情頁的結構化欄位顯示」共用同一份對照,不會出現兩處各自維護、日後改一邊漏改
+// 另一邊的問題。
+export const COMPENSATION_TYPE_LABELS: Record<string, string> = {
+  HOURLY: "時薪", CREDIT: "掛名致謝", COAUTHOR: "共同作者", UNPAID: "無報酬",
+};
+
+// postings.structuredFields 各類別欄位的顯示標籤,供需求詳情頁(postings/[id])的
+// 「詳細資訊」區塊使用——發布表單(createUnitPostingSchema / createGradHelperPostingSchema /
+// createStudentCollabPostingSchema)蒐集的結構化欄位,先前只寫進 DB 卻從未顯示給瀏覽者看,
+// 屬於功能缺口(尤其單位職缺的時薪/工時/勞健保/聯繫方式等,學生應徵前本來就該看得到)。
+// needsProfessorGuidance 刻意不放進來——它是控制「教授指導」提示區塊要不要出現的布林
+// 旗標,不是要單獨條列顯示的一筆資訊,頁面另外處理。
+export const STRUCTURED_FIELD_LABELS: Record<string, string> = {
+  // 單位帳號發布(白皮書 2.5.3)
+  wage: "時薪/月薪",
+  weeklyHoursAndTerm: "每週工時、聘期起訖",
+  laborInsurance: "勞健保投保方式",
+  workLocationAndContent: "工作地點、工作內容",
+  qualificationRestriction: "資格限制",
+  contact: "聯繫方式",
+  contactPersonName: "職缺負責人姓名",
+  staffExtension: "分機",
+  // 碩博生自行發布需求找幫手(白皮書 2.4.1)
+  compensationType: "報酬形式",
+  advisorName: "所屬指導教授",
+  // 學生合作專區六分區(白皮書 2.6.2)
+  rolesNeeded: "需要的角色與人數",
+  deadline: "截止日",
+  otherTypeLabel: "類型(其他,自填)",
+  compensationNote: "報酬/其他補充說明",
+};
+
+// 示範環境「一鍵登入」對應的角色清單(白皮書 2.11.4 登入門檻上線後,對應使用者需求
+// 「先設計一組虛擬可以直接通過的帳密或是登入方式讓我可以 present」)。放在這裡而不是
+// server/actions.ts,理由與本檔案開頭註解相同:src/app/login/page.tsx 是 client component,
+// 要畫按鈕清單,不能引入會牽動 db client 的伺服器端模組。三個帳號對應
+// src/server/db/seed.ts 建立的示範帳號,刻意不是隨機建立的空帳號——教授已連結
+// professorProfiles、學生已有申請/請求紀錄等,登入後才有實際內容可以 present。
+// 真正的 NODE_ENV 判斷仍在伺服器端(quickLoginDemo/quickLoginAction),這裡的清單只決定
+// UI 要不要「顯示」按鈕,不是信任邊界——即使有人在正式環境硬送出表單,伺服器端一樣會拒絕。
+export const DEMO_PERSONAS: { key: string; label: string; email: string }[] = [
+  { key: "student", label: "示範學生", email: "student.demo@g.nccu.edu.tw" },
+  { key: "professor", label: "示範教授", email: "professor.demo@nccu.edu.tw" },
+  { key: "admin", label: "示範管理員(需另外通過雙因素驗證)", email: "admin@nccu.edu.tw" },
+];
