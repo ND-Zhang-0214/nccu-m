@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getPosting, listApplicationsForPosting, CATEGORIES } from "@/server/repositories/postings";
-import { currentUser } from "@/server/auth";
+import { requireUser } from "@/server/authz";
 import { updateApplicationStatusAction, startConversationAction, requestFileLinkAction, createSlotsAction, summarizeApplicationAction, getIcsLinkAction } from "@/app/actions";
 import { listAttachmentsForApplication } from "@/server/repositories/attachments";
 import { listSlotsByProfessor } from "@/server/repositories/interviews";
@@ -17,8 +17,7 @@ const STATUS_LABEL: Record<string, string> = {
 export default async function ApplicationsComparePage({ params }: { params: { id: string } }) {
   const posting = await getPosting(params.id);
   if (!posting) notFound();
-  const user = await currentUser();
-  if (!user) redirect("/login");
+  const user = await requireUser();
   const isOwner = posting.posterUserId === user.id;
   if (!isOwner && user.role !== "ADMIN") redirect("/");
 

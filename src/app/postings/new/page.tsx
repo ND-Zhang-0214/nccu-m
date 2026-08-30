@@ -1,14 +1,12 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
-import { currentUser } from "@/server/auth";
+import { requireUser } from "@/server/authz";
 import { getProfessorByUserId } from "@/server/repositories/professors";
 import { CreatePostingForm } from "./create-posting-form";
 
 export const dynamic = "force-dynamic";
 
 export default async function NewPostingPage() {
-  const user = await currentUser();
-  if (!user) redirect("/login");
+  const user = await requireUser();
   const prof = await getProfessorByUserId(user.id);
   if (!prof) {
     return (

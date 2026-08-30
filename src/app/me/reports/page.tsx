@@ -1,6 +1,5 @@
 // 對應決策表 #11:檢舉進度可視化,取代「送出後石沉大海」。
-import { redirect } from "next/navigation";
-import { currentUser } from "@/server/auth";
+import { requireUser } from "@/server/authz";
 import { listReportsByUser } from "@/server/repositories/audit";
 
 export const dynamic = "force-dynamic";
@@ -8,8 +7,7 @@ export const dynamic = "force-dynamic";
 const STATUS_LABEL: Record<string, string> = { open: "受理中", resolved: "已結案(成立)", dismissed: "已結案(不成立)" };
 
 export default async function MyReportsPage() {
-  const user = await currentUser();
-  if (!user) redirect("/login");
+  const user = await requireUser();
   const reports = await listReportsByUser(user.id);
 
   return (

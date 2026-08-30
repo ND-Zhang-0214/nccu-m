@@ -20,7 +20,9 @@ export async function POST(req: Request) {
     );
   }
 
-  const user = await verifyCodeAndLogin(email, parsed.data.code);
+  const user = await verifyCodeAndLogin(email, parsed.data.code, {
+    ip, userAgent: req.headers.get("user-agent") || "",
+  });
   const delayMs = await recordVerifyAttempt(email, ip, !!user);
   if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs)); // 階梯式延遲,拉高暴力嘗試成本
 

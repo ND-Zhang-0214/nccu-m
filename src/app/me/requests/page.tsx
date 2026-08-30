@@ -1,7 +1,6 @@
 // 白皮書 2.9/2.10:學生發起請求的進度可視化,比照「我的申請」(決策表 #11)的設計精神。
 import Link from "next/link";
-import { redirect } from "next/navigation";
-import { currentUser } from "@/server/auth";
+import { requireUser } from "@/server/authz";
 import { listMyStudentRequests } from "@/server/repositories/student-requests";
 import { REQUEST_TYPES, REQUEST_STATUS_LABELS } from "@/shared/categories";
 
@@ -13,8 +12,7 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 export default async function MyRequestsPage() {
-  const user = await currentUser();
-  if (!user) redirect("/login");
+  const user = await requireUser();
   const requests = await listMyStudentRequests(user.id);
 
   return (

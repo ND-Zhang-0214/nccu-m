@@ -1,9 +1,18 @@
 "use client";
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { quickLoginAction } from "@/app/actions";
+import { DEMO_PERSONAS } from "@/shared/categories";
 
-export default function Login() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // next 的安全性檢查與 src/server/auth.ts 的 isSafeNextPath() 邏輯相同,但這裡是 client
+  // component 不能直接 import 該檔案(它牽動 db client 等伺服器端相依),故重複這段極簡單
+  // 的三行判斷——只有通過的值才會被當成有效的 next 使用,其餘一律視為沒有 next。
+  const nextRaw = searchParams.get("next") || "";
+  const next = nextRaw.startsWith("/") && !nextRaw.startsWith("//") && !nextRaw.includes("://") ? nextRaw : "";
+
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [step, setStep] = useState<"email" | "code">("email");
@@ -33,7 +42,10 @@ export default function Login() {
     const data = await res.json();
     setBusy(false);
     if (!res.ok) { setMsg(data.error); return; }
-    router.push("/terms"); router.refresh();
+    // 白皮書 2.11.4 登入門檻上線後,大部分登入是從某個受保護頁面被導來的(帶著 next),
+    // 登入成功後應該先去簽署條款(如未簽過),再送回原本要去的地方,而不是一律停在 /terms。
+    router.push(next ? `/terms?next=${encodeURIComponent(next)}` : "/terms");
+    router.refresh();
   }
 
   return (
@@ -57,6 +69,34 @@ export default function Login() {
         </form>
       )}
       {msg && <div className="notice">{msg}</div>}
+
+      {process.env.NODE_ENV !== "production" && (
+        <>
+          <hr style={{ margin: "28px 0 20px", border: 0, borderTop: "1px solid var(--hairline)" }} />
+          <h2 style={{ fontSize: 15 }}>示範環境快速登入</h2>
+          <p className="lede" style={{ fontSize: 13 }}>
+            僅供 present 使用,略過驗證碼直接以示範帳號取得 session;正式環境(next build 後以
+            NODE_ENV=production 執行)不會顯示這一區,伺服器端 quickLoginAction 也會直接拒絕執行。
+          </p>
+          {DEMO_PERSONAS.map((p) => (
+            <form key={p.key} className="stack" action={quickLoginAction}>
+              <input type="hidden" name="persona" value={p.key} />
+              <input type="hidden" name="next" value={next} />
+              <p style={{ marginTop: 4, marginBottom: 4 }}><button className="secondary">一鍵登入:{p.label}</button></p>
+            </form>
+          ))}
+        </>
+      )}
     </>
+  );
+}
+
+export default function Login() {
+  // useSearchParams() 依 Next.js App Router 規定需要包在 Suspense 邊界內,否則會讓
+  // 整頁在建置時被迫改為純 client-side rendering(甚至可能導致 next build 失敗)。
+  return (
+    <Suspense fallback={<p className="lede">載入中…</p>}>
+      <LoginForm />
+    </Suspense>
   );
 }

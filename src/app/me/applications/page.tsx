@@ -1,7 +1,6 @@
 // 對應決策表 #11:申請進度可視化狀態列,取代「送出後就不知道進度」。
 import Link from "next/link";
-import { redirect } from "next/navigation";
-import { currentUser } from "@/server/auth";
+import { requireUser } from "@/server/authz";
 import { listMyApplications, CATEGORIES } from "@/server/repositories/postings";
 import { listAttachmentsForApplication } from "@/server/repositories/attachments";
 import { requestFileLinkAction } from "@/app/actions";
@@ -40,8 +39,7 @@ function StatusTrack({ status }: { status: string }) {
 }
 
 export default async function MyApplicationsPage() {
-  const user = await currentUser();
-  if (!user) redirect("/login");
+  const user = await requireUser();
   const applications = await listMyApplications(user.id);
 
   return (

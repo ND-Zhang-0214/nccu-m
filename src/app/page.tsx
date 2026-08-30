@@ -1,10 +1,34 @@
 import Link from "next/link";
+import { currentUser } from "@/server/auth";
 import { listColleges } from "@/server/repositories/taxonomy";
 import { listOpenPostings, listFeaturedPostings, CATEGORIES } from "@/server/repositories/postings";
 
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
+  const user = await currentUser();
+
+  // 白皮書 2.11.4:「平台介紹」是明列的公開範圍,但「需求內容」需登入——首頁先前不論
+  // 登入與否都直接列出真實需求標題與精選內容,與此牴觸(這條規則先前只落實在個別內容頁,
+  // 首頁本身漏掉了)。未登入只給介紹文案 + 登入入口,登入後才顯示下方真正的需求列表。
+  if (!user) {
+    return (
+      <>
+        <h1>把研究需求與人才,放進同一份目錄</h1>
+        <p className="lede">
+          教授的研究助理需求、大專生計畫、推薦信申請與跨域合作,目前散落在各個管道。
+          這裡把它們整理成一份可以逐層翻閱的校內目錄——從學院到學系,從領域到子領域,再到每一位教授。
+        </p>
+        <p className="lede" style={{ fontSize: 13.5 }}>
+          僅限政大校內信箱使用。登入後即可瀏覽完整的學院/系所/教授目錄與開放需求(白皮書 2.11.4)。
+        </p>
+        <p>
+          <Link className="btn" href="/login">以校內信箱登入 →</Link>
+        </p>
+      </>
+    );
+  }
+
   const [colleges, postings] = await Promise.all([listColleges(), listOpenPostings()]);
   const latest = postings.slice(0, 3);
   const featured = await listFeaturedPostings(latest.map((p) => p.id), 4);
@@ -44,7 +68,9 @@ export default async function Home() {
               <Link className="mini-card" href={`/postings/${p.id}`} key={p.id}>
                 <div className="mini-card-name">{p.title}</div>
                 <div className="mini-card-meta">
-                  <span className="badge cat">{CATEGORIES[p.category]}</span> {p.professor.displayName}
+                  {/* 修正:先前遺留 p.professor.displayName,單位/學生發起的需求 professor 為 null 會直接
+                      crash——這裡統一改用 attachPosterInfo() 已經算好、三種發起方都能安全使用的 posterName。 */}
+                  <span className="badge cat">{CATEGORIES[p.category]}</span> {p.posterName}
                 </div>
               </Link>
             ))}

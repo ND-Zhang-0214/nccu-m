@@ -7,7 +7,8 @@
 // fail-closed 原則:任何判斷過程拋出例外,一律視為「拒絕」,不得因錯誤而放行
 // (對應 §4.3、§10 原則 3)。
 import { redirect } from "next/navigation";
-import { currentUser, currentSession } from "@/server/auth";
+import { headers } from "next/headers";
+import { currentUser, currentSession, isSafeNextPath } from "@/server/auth";
 import { getApplication } from "@/server/repositories/postings";
 import { getPosting } from "@/server/repositories/postings";
 import { logSecurityEvent } from "@/server/repositories/security";
@@ -18,7 +19,20 @@ export type AuthedUser = NonNullable<Awaited<ReturnType<typeof currentUser>>>;
 
 export async function requireUser(): Promise<AuthedUser> {
   const user = await currentUser();
-  if (!user) redirect("/login");
+  if (!user) {
+    // middleware.ts 會把目前路徑(含 query string)寫進 x-pathname 這個請求標頭轉發下來——
+    // Next.js App Router 沒有提供在任意伺服器端函式內讀取「目前網址」的公開 API,這是
+    // 官方文件認可的標準繞道(middleware 轉發自訂請求標頭,伺服器端用 headers() 讀回,
+    // 與同一支 middleware 裡 CSP nonce 的轉發是同一套機制)。讀不到或格式不安全就退回
+    // 不帶 next 的陽春版:寧可少一段「登入後跳回原頁」的體驗,也不要把未經驗證的字串
+    // 直接餵進 redirect()。
+    // 註:大部分匿名訪客會先被 middleware 用「cookie 存不存在」擋下(直接帶 next 導去
+    // /login,見 middleware.ts)。會走到這裡的是「cookie 存在但 session 已失效」
+    // (閒置/絕對逾時、被強制登出等)這種 middleware 因跑在 Edge runtime、無法查資料庫
+    // 而篩不掉的情況——屬於第二層權威複查(defense-in-depth,兩層各司其職)。
+    const path = headers().get("x-pathname");
+    redirect(isSafeNextPath(path) ? `/login?next=${encodeURIComponent(path)}` : "/login");
+  }
   return user;
 }
 
@@ -65,6 +79,24 @@ export async function canOperatePosting(userId: string, postingId: string): Prom
   }
 }
 
+/** 編輯歷史(白皮書 2.8.2):僅需求擁有者、已對此需求提出申請者、或管理員可查看完整編輯
+ *  歷史——頁面本身的「當前內容」一般瀏覽者都看得到,這支函式只把關「歷史」這條路徑。
+ *  白皮書原文表格與其自身理由段落互相矛盾(表格寫一般瀏覽者也可查詢),交付文件已誠實
+ *  列出此落差,程式碼採信理由段落(較嚴謹的一方),與 getPostingVersions() 的註解一致。 */
+export async function requirePostingHistoryViewer(postingId: string) {
+  const user = await requireUser();
+  if (user.role === "ADMIN") return user;
+  const isOwner = await canOperatePosting(user.id, postingId);
+  if (isOwner) return user;
+  const { getMyApplicationForPosting } = await import("@/server/repositories/postings");
+  const myApp = await getMyApplicationForPosting(postingId, user.id);
+  if (!myApp) {
+    await logSecurityEvent("authz.denied", "medium", user.id, "", { resource: "POSTING_HISTORY", id: postingId });
+    redirect("/");
+  }
+  return user;
+}
+
 export async function requirePostingOwner(postingId: string) {
   const user = await requireUser();
   if (user.role === "ADMIN") return user;
@@ -98,7 +130,10 @@ export async function requireApplicationStatusEditor(applicationId: string) {
   if (!app) redirect("/");
   const posting = await getPosting(app.postingId);
   if (!posting) redirect("/");
-  const isOwner = posting.professor.userId === user.id;
+  // 修正:原本寫 posting.professor.userId,單位/學生發起的需求 professor 為 null 會直接
+  // 丟例外(fail-closed 之下會變成一律拒絕,雖不算授權漏洞,但會讓單位/學生發起需求的
+  // 申請狀態功能整個壞掉)——統一改用 posterUserId,同 canOperatePosting 的作法。
+  const isOwner = posting.posterUserId === user.id;
   if (!isOwner && user.role !== "ADMIN") {
     await logSecurityEvent("authz.denied", "high", user.id, "", {
       resource: "APPLICATION_STATUS", id: applicationId, note: "非需求擁有者嘗試變更申請狀態",
@@ -131,7 +166,7 @@ export async function requireConversationMember(conversationId: string) {
   return user;
 }
 
-/** 附件只有上傳者本人、該申請對應需求的教授、或管理員可存取(§2.2、§6)。 */
+/** 附件只有上傳者本人、該申請對應需求的教授、群組檔案的同群組成員、或管理員可存取(§2.2、§6、白皮書 2.7.2)。 */
 export async function requireAttachmentAccess(attachmentId: string) {
   const user = await requireUser();
   const { getAttachment } = await import("@/server/repositories/attachments");
@@ -141,6 +176,11 @@ export async function requireAttachmentAccess(attachmentId: string) {
   if (att.applicationId) {
     const isOwner = await canOperatePosting(user.id, (await getApplication(att.applicationId))?.postingId ?? "");
     if (isOwner) return { user, att };
+  }
+  // 白皮書 2.7.2:群組共用檔案「成員可下載與刪除」——不限上傳者本人,同群組任一成員皆可。
+  if (att.groupId) {
+    const { isGroupMember } = await import("@/server/repositories/groups");
+    if (await isGroupMember(att.groupId, user.id)) return { user, att };
   }
   await logSecurityEvent("authz.denied", "high", user.id, "", { resource: "ATTACHMENT", id: attachmentId });
   redirect("/");
@@ -205,6 +245,43 @@ export async function requireOwnProfessorProfile() {
     redirect("/professor/dashboard");
   }
   return { user, professorId: prof.id };
+}
+
+// ── 白皮書 2.5:單位帳號(2026-08 第二輪新增)──────────────────────────
+
+/** 單位本人的單位檔案(用於發布職缺等僅該單位帳號本人可做的動作),比照
+ *  requireOwnProfessorProfile 的寫法——刻意不讓 ADMIN 略過,理由相同:
+ *  這是「代表某個單位」的動作,管理員沒有對應的單位身分可代入。 */
+export async function requireOwnUnitProfile() {
+  const user = await requireActiveUser();
+  const { getUnitByUserId } = await import("@/server/repositories/units");
+  const unit = await getUnitByUserId(user.id);
+  if (!unit) {
+    await logSecurityEvent("authz.denied", "medium", user.id, "", { resource: "UNIT_PROFILE_SELF" });
+    redirect("/");
+  }
+  return { user, unitId: unit.id };
+}
+
+/** 白皮書 2.5.2 單位帳號權限範圍——「不可:瀏覽教授資料、發起研究媒合」。後者已經因為
+ *  單位帳號沒有 professorProfiles 而自然被 requireOwnProfessorProfile 擋下,這支函式
+ *  補上前者:凡是教授目錄/教授頁面一律呼叫,擋單位帳號。
+ *
+ *  白皮書 2.11.4「登入門檻前移」上線後(2026-08 第二輪):教授目錄本來就屬於「所有教授
+ *  資料」,是全站登入化清單明文列出的項目,這裡改用 requireUser() 而非 currentUser(),
+ *  順勢由這支既有的目錄守則一併把關,不用在每個呼叫端(browse/*、professors/[id]、
+ *  subfields/[id])各自再加一次 requireUser()。全站層級的粗篩仍在 middleware.ts
+ *  (未帶 session cookie 直接擋在頁面渲染之前);這裡是頁面層級的權威複查
+ *  (defense-in-depth,覆蓋「cookie 存在但已失效」這種 middleware 篩不掉的情況)。
+ *  未登入者原本「完全不受影響」的舊行為到此為止——這正是本次要做的變更本身。 */
+export async function blockUnitFromDirectory() {
+  const user = await requireUser();
+  if (user?.role === "UNIT") {
+    await logSecurityEvent("authz.denied", "low", user.id, "", {
+      resource: "PROFESSOR_DIRECTORY", note: "單位帳號嘗試瀏覽教授資料(白皮書2.5.2)",
+    });
+    redirect("/unit/dashboard");
+  }
 }
 
 /** 請求(student_requests)只有發起的學生本人、該教授本人、或管理員可查看(比照 requireApplicationAccess)。 */
