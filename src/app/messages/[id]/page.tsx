@@ -2,7 +2,8 @@ import { notFound } from "next/navigation";
 import { requireConversationMember } from "@/server/authz";
 import { getConversationDetail, listDisclosedToMe } from "@/server/repositories/messaging";
 import { listUserContacts } from "@/server/repositories/messaging";
-import { setStatusAction, discloseContactAction } from "@/app/actions";
+import { setStatusAction, discloseContactAction, hideUserAction, unhideUserAction } from "@/app/actions";
+import { isHiddenEitherWay } from "@/server/repositories/users";
 import { MessageForm } from "./message-form";
 
 export const dynamic = "force-dynamic";
@@ -15,17 +16,29 @@ export default async function ConversationPage({ params }: { params: { id: strin
   if (!detail) notFound();
   const { me, otherUser, messages, conv } = detail;
 
-  const [myContacts, disclosedToMe] = await Promise.all([
+  const [myContacts, disclosedToMe, iHideThem] = await Promise.all([
     listUserContacts(user.id),
     listDisclosedToMe(params.id, user.id),
+    otherUser ? isHiddenEitherWay(user.id, otherUser.id) : Promise.resolve(false),
   ]);
 
   return (
     <>
-      <h1>{otherUser?.displayName ?? "（已離開的使用者）"}</h1>
+      <h1>
+        {otherUser?.displayName ?? "（已離開的使用者）"}
+        {otherUser && (
+          <form action={iHideThem ? unhideUserAction : hideUserAction} style={{ display: "inline", marginLeft: 12 }}>
+            <input type="hidden" name="targetUserId" value={otherUser.id} />
+            <button className="secondary" style={{ fontSize: 12 }}>
+              {iHideThem ? "取消隱藏" : "隱藏此使用者"}
+            </button>
+          </form>
+        )}
+      </h1>
       <p className="lede">
         {conv.contextType === "APPLICATION" ? "依附於一筆申請的對話" : "直接邀約對話"}
         {conv.confirmedAt && "・媒合已確認"}
+        {iHideThem && "・你已隱藏此使用者(此對話仍可繼續,僅擋新對話/群組邀請)"}
       </p>
 
       {/* 忙碌/有空狀態:雙方各自設定,系統不做自動偵測 */}

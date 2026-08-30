@@ -8,6 +8,7 @@ import * as t from "@/server/db/schema";
 import { and, eq, desc, asc, gte, count } from "drizzle-orm";
 import { encryptField, decryptField } from "@/server/crypto";
 import { logSecurityEvent } from "./security";
+import { hasHideRelationship } from "./users";
 
 const DAILY_NEW_CONVERSATION_LIMIT = 5;
 
@@ -31,6 +32,12 @@ export async function getOrCreateConversationForApplication(
   const [existing] = await db.select().from(t.conversations)
     .where(and(eq(t.conversations.contextType, "APPLICATION"), eq(t.conversations.contextId, applicationId)));
   if (existing) return existing;
+
+  // 白皮書 2.12.2:隱藏是雙向擋新互動(不論誰隱藏誰),但既有對話不受影響——這裡只在
+  // 要「新建」對話時檢查,上面 existing 已提前 return 的既有對話不會被這條規則影響到。
+  if (await hasHideRelationship(applicantId, professorUserId)) {
+    throw new ConversationLimitError("目前無法與對方開啟新對話。");
+  }
 
   const newCount = await countNewConversationsToday(applicantId);
   if (newCount >= DAILY_NEW_CONVERSATION_LIMIT) {
