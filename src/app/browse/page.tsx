@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { listColleges } from "@/server/repositories/taxonomy";
+import { blockUnitFromDirectory } from "@/server/authz";
 
 export const dynamic = "force-dynamic";
 
 export default async function BrowseColleges() {
+  await blockUnitFromDirectory(); // 白皮書2.5.2:單位帳號不可瀏覽教授資料
   const colleges = await listColleges();
   return (
     <>

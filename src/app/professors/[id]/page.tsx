@@ -6,10 +6,12 @@ import { guardAgainstScraping } from "@/server/anti-scrape";
 import { currentUser } from "@/server/auth";
 import { getIntakeSettingsForProfessor } from "@/server/repositories/student-requests";
 import { REQUEST_TYPES, INTAKE_TYPES_WITH_REQUEST_FORM } from "@/shared/categories";
+import { blockUnitFromDirectory } from "@/server/authz";
 
 export const dynamic = "force-dynamic";
 
 export default async function ProfessorPage({ params }: { params: { id: string } }) {
+  await blockUnitFromDirectory(); // 白皮書2.5.2:單位帳號不可瀏覽教授資料
   await guardAgainstScraping("PROFESSOR", params.id, `/professors/${params.id}`);
   const data = await getProfessor(params.id);
   if (!data) notFound();

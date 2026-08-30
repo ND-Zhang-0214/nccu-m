@@ -48,6 +48,16 @@ export async function listOpenPostings(category?: string) {
   return attachPosterInfo(rows);
 }
 
+// 白皮書 2.6.1:學生合作專區六分區,發布後系統依類型自動歸入分區各自呈現——
+// 這裡先撈出全部六分區的開放邀集,分區呈現交給頁面依 category 分組(見 /collab)。
+export async function listOpenCollabPostings() {
+  const { STUDENT_COLLAB_CATEGORY_ORDER } = await import("@/shared/categories");
+  const rows = await db.select().from(t.postings)
+    .where(and(eq(t.postings.isOpen, true), inArray(t.postings.category, STUDENT_COLLAB_CATEGORY_ORDER)))
+    .orderBy(desc(t.postings.createdAt));
+  return attachPosterInfo(rows);
+}
+
 // 白皮書 2.8.3:已關閉的需求歸入獨立分區,但發文者/申請者/管理員仍可查詢(不可真刪除)。
 export async function listClosedPostings(category?: string) {
   const cond = category

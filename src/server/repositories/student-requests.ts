@@ -127,6 +127,16 @@ export async function listMyStudentRequests(studentId: string) {
   return rows.map((r) => ({ ...r, professor: byId.get(r.professorId)! }));
 }
 
+/** 白皮書 2.6.4:合作專區「需要教授指導」勾選後,列出已開啟該類型受理開關的教授
+ *  (目前唯一呼叫情境是 COLLAB_GUIDE,寫成通用函式以便未來其他類型需要同樣列表時重用)。 */
+export async function listProfessorsWithIntakeEnabled(type: IntakeType) {
+  const rows = await db.select().from(t.professorIntakeSettings)
+    .where(and(eq(t.professorIntakeSettings.type, type), eq(t.professorIntakeSettings.enabled, true)));
+  const profIds = rows.map((r) => r.professorId);
+  if (profIds.length === 0) return [];
+  return db.select().from(t.professorProfiles).where(inArray(t.professorProfiles.id, profIds));
+}
+
 /** 教授端「收到的學生請求」清單(比照 listApplicationsForPosting)。 */
 export async function listIncomingRequestsForProfessor(professorId: string) {
   const rows = await db.select().from(t.studentRequests)

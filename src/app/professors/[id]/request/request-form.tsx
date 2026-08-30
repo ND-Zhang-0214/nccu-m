@@ -28,12 +28,16 @@ export function RequestForm({ professorId, type }: { professorId: string; type: 
   const [projectName, setProjectName] = useState("");
   const [sponsor, setSponsor] = useState("");
   const [detail, setDetail] = useState("");
+  // COLLAB_GUIDE(白皮書 2.6.4:合作專區「需要教授指導」→ 走同一套請求流程)
+  const [projectSummary, setProjectSummary] = useState("");
+  const [guidanceNeeded, setGuidanceNeeded] = useState("");
 
   const payload =
     type === "REC" ? { purpose, deadline, subject } :
     type === "UR" ? { proposal } :
     type === "LAB_JOIN" ? { motivation, availability } :
-    type === "EXT_ENDORSE" ? { projectName, sponsor, detail } : {};
+    type === "EXT_ENDORSE" ? { projectName, sponsor, detail } :
+    type === "COLLAB_GUIDE" ? { projectSummary, guidanceNeeded } : {};
 
   return (
     <form className="stack" action={action}>
@@ -92,6 +96,19 @@ export function RequestForm({ professorId, type }: { professorId: string; type: 
           <textarea id="detail" rows={6} required minLength={15} maxLength={2000} value={detail}
             placeholder="計畫內容、希望老師掛名指導的原因……"
             onChange={(e) => setDetail(e.target.value)} />
+        </>
+      )}
+
+      {type === "COLLAB_GUIDE" && (
+        <>
+          <label htmlFor="projectSummary">合作專案內容簡述(至少 15 字)</label>
+          <textarea id="projectSummary" rows={6} required minLength={15} maxLength={2000} value={projectSummary}
+            placeholder="這個合作專案在做什麼、目前進度、團隊組成……"
+            onChange={(e) => setProjectSummary(e.target.value)} />
+          <label htmlFor="guidanceNeeded">需要哪方面的指導(至少 5 字)</label>
+          <textarea id="guidanceNeeded" rows={4} required minLength={5} maxLength={500} value={guidanceNeeded}
+            placeholder="例:研究方法、跨領域整合、成果發表方向……"
+            onChange={(e) => setGuidanceNeeded(e.target.value)} />
         </>
       )}
 

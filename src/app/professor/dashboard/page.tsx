@@ -1,19 +1,18 @@
 // 對應決策表 #10:新手引導清單(教授端)+ #9 身分視角切換的教授視角落地頁。
 import Link from "next/link";
-import { redirect } from "next/navigation";
-import { currentUser } from "@/server/auth";
+import { requireUser } from "@/server/authz";
 import { getProfessorByUserId, getProfessorOnboarding } from "@/server/repositories/professors";
 import { listPostingsByProfessor, CATEGORIES } from "@/server/repositories/postings";
 import { AiTagsWidget } from "./ai-tags-widget";
 import { getIntakeSettingsForProfessor, listIncomingRequestsForProfessor } from "@/server/repositories/student-requests";
 import { REQUEST_TYPES, REQUEST_STATUS_LABELS } from "@/shared/categories";
 import { updateIntakeSettingAction, respondToRequestAction, finalizeRecommendationAction } from "@/app/actions";
+import { VerifyDegreeLevelForm } from "./verify-degree-level-form";
 
 export const dynamic = "force-dynamic";
 
 export default async function ProfessorDashboard() {
-  const user = await currentUser();
-  if (!user) redirect("/login");
+  const user = await requireUser();
   const prof = await getProfessorByUserId(user.id);
   if (!prof) {
     return (
@@ -76,11 +75,12 @@ export default async function ProfessorDashboard() {
         <ul className="catalog">
           {postings.map((p) => (
             <li key={p.id}>
-              <Link href={`/postings/${p.id}/applications`}>
-                <span>{p.title}</span>
+              <span className="row">
+                <Link href={`/postings/${p.id}/applications`}>{p.title}</Link>
                 <span className="badge cat">{CATEGORIES[p.category]}</span>
                 <span className="count">{p.isOpen ? "開放中" : "已關閉"}</span>
-              </Link>
+                <Link href={`/postings/${p.id}`} style={{ marginLeft: 10, fontSize: 12.5 }}>編輯/管理</Link>
+              </span>
             </li>
           ))}
         </ul>
@@ -115,6 +115,15 @@ export default async function ProfessorDashboard() {
         </div>
       ))}
 
+      {/* 白皮書 2.2.3/2.4.1:碩博生要用「自行發布需求找幫手」前需經教授確認學制。
+          demo 環境簡化為任一位已認領帳號的教授皆可代為確認,不限定是該生的指導教授。 */}
+      <h2>驗證學生學制</h2>
+      <p className="lede" style={{ fontSize: 13.5 }}>
+        碩博生要使用「自行發布需求找幫手」功能前,需經教授確認學制。請輸入該學生的校內信箱
+        (該學生須已在「個人設定」自行填寫學制為碩士或博士)。
+      </p>
+      <VerifyDegreeLevelForm />
+
       {/* 白皮書 2.9:學生 → 教授請求的教授端回應介面。 */}
       <h2>收到的學生請求{pendingCount > 0 && <span className="badge cat" style={{ marginLeft: 8 }}>{pendingCount} 則待處理</span>}</h2>
       {incomingRequests.length === 0 ? (
@@ -132,6 +141,7 @@ function RequestCard({ r }: { r: Awaited<ReturnType<typeof listIncomingRequestsF
   const FIELD_LABELS: Record<string, string> = {
     purpose: "推薦信目的", deadline: "截止日", subject: "請求信主旨", proposal: "研究構想",
     motivation: "動機與背景", availability: "可投入時間", projectName: "計畫名稱", sponsor: "計畫來源/單位", detail: "說明",
+    projectSummary: "合作專案內容簡述", guidanceNeeded: "需要的指導方向",
   };
 
   return (

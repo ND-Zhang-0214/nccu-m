@@ -2,10 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSubfieldWithProfessors } from "@/server/repositories/taxonomy";
 import { guardAgainstScraping } from "@/server/anti-scrape";
+import { blockUnitFromDirectory } from "@/server/authz";
 
 export const dynamic = "force-dynamic";
 
 export default async function SubfieldPage({ params }: { params: { id: string } }) {
+  await blockUnitFromDirectory(); // 白皮書2.5.2:單位帳號不可瀏覽教授資料
   await guardAgainstScraping("SUBFIELD", params.id, `/subfields/${params.id}`);
   const data = await getSubfieldWithProfessors(params.id);
   if (!data) notFound();

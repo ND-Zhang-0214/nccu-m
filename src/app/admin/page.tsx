@@ -19,6 +19,7 @@ export default async function AdminPage() {
         {" "}<Link href="/admin/approvals">敏感調閱雙人核可 →</Link>
         {" "}<Link href="/admin/lifecycle">帳號生命週期 →</Link>
         {" "}<Link href="/admin/semester-report">學期聚合報告 →</Link>
+        {" "}<Link href="/admin/units">單位帳號管理 →</Link>
       </p>
 
       <h2>待審核教授帳號({pending.length})</h2>

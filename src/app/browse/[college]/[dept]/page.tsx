@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getDepartmentTree } from "@/server/repositories/taxonomy";
+import { blockUnitFromDirectory } from "@/server/authz";
 
 export const dynamic = "force-dynamic";
 
 export default async function DeptPage({ params }: { params: { college: string; dept: string } }) {
+  await blockUnitFromDirectory(); // 白皮書2.5.2:單位帳號不可瀏覽教授資料
   const data = await getDepartmentTree(params.college, params.dept);
   if (!data) notFound();
   return (
