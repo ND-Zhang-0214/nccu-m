@@ -11,7 +11,8 @@ import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import * as schema from "./schema";
 
-const globalForDb = globalThis as unknown as { db?: ReturnType<typeof create>; pgPool?: Pool };
+type Db = ReturnType<typeof create>;
+const globalForDb = globalThis as unknown as { db?: Db; pgPool?: Pool };
 
 function create() {
   const connectionString = process.env.DATABASE_URL;
@@ -33,5 +34,40 @@ function create() {
   return drizzle(pool, { schema });
 }
 
-export const db = globalForDb.db ?? create();
-if (process.env.NODE_ENV !== "production") globalForDb.db = db;
+// ── 延遲建立(lazy):不可以在模組載入當下就連資料庫 ──────────────────────
+// 2026-08-31 修正(部署 Vercel 時實際踩到):原本這裡是
+//     export const db = globalForDb.db ?? create();
+// 也就是「只要有人 import 這個檔案,就立刻執行 create()」。create() 在缺少
+// DATABASE_URL 時會 throw——而 next build 的「Collecting page data」階段會把每一支
+// route 模組都 import 一次(為了讀取 route 的設定,例如 dynamic/revalidate),
+// 於是建置階段就直接炸掉,錯誤訊息是「Failed to collect page data for /api/...」。
+//
+// 附帶說明:在 route 檔案加上 export const dynamic = "force-dynamic" 並不能解決這個問題
+// ——Next.js 正是要 import 模組才讀得到那個 export,模組頂層的 throw 照樣會發生
+// (實測驗證過:加了之後錯誤只是從 request-code 移到下一支 verify)。
+//
+// 正確做法是讓 db 變成「用到才建立」:以 Proxy 包一層,任何屬性存取(db.select、
+// db.insert、db.transaction……)才觸發 create()。這樣 import 永遠不會有副作用,
+// 建置階段安全,實際處理請求時才會真的連線。呼叫端一行都不用改。
+let instance: Db | undefined;
+
+function getDb(): Db {
+  if (!instance) {
+    instance = globalForDb.db ?? create();
+    // 開發模式下 Next.js 會 hot reload,存到 globalThis 避免每次改檔案都新開一個連線池。
+    if (process.env.NODE_ENV !== "production") globalForDb.db = instance;
+  }
+  return instance;
+}
+
+export const db = new Proxy({} as Db, {
+  get(_target, prop, receiver) {
+    const real = getDb() as unknown as Record<string | symbol, unknown>;
+    const value = Reflect.get(real, prop, receiver);
+    // 方法要綁回真正的 db 實例,否則 drizzle 內部的 this 會指到 Proxy。
+    return typeof value === "function" ? value.bind(real) : value;
+  },
+  has(_target, prop) {
+    return Reflect.has(getDb() as unknown as object, prop);
+  },
+});
