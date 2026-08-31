@@ -1,9 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // better-sqlite3 為原生模組,需列為外部套件。
+  // 2026-08-31:原本列的是 better-sqlite3,但資料庫已換成 PostgreSQL,該套件早已移除,
+  // 這裡留著一個不存在的套件名稱只會誤導後續維護者。改列 pg(node-postgres)——它內部有
+  // 對選用套件 pg-native 的動態 require,交給打包器處理容易出問題,列為外部套件較穩妥。
   // instrumentationHook:開啟 src/instrumentation.ts 的 register() 掛鉤(Next.js 14 此旗標
   // 預設關閉,需顯式開啟),server process 啟動時據此啟動定時排程(見 server/scheduler.ts)。
-  experimental: { serverComponentsExternalPackages: ["better-sqlite3"], instrumentationHook: true },
+  experimental: { serverComponentsExternalPackages: ["pg"], instrumentationHook: true },
 
   // §4.1、§4.2:全站安全回應標頭。
   // 2026-08 修正:Content-Security-Policy 原本寫死在這裡(無 nonce/unsafe-inline),

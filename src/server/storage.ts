@@ -67,6 +67,16 @@ export async function saveFile(buf: Buffer, ext: string): Promise<string> {
     });
     return blob.url;
   }
+  // 2026-08-31 新增的防呆:部署在 Vercel(或任何無伺服器平台)但沒設定 Blob 時,
+  // 下面的本機目錄寫入會因為檔案系統唯讀而失敗,錯誤訊息是看不懂的 EROFS。
+  // 與其讓使用者上傳到一半拿到系統層錯誤,不如在這裡就講清楚原因與解法。
+  if (process.env.VERCEL) {
+    throw new Error(
+      "檔案上傳尚未設定:此站台部署於無伺服器環境,無法寫入本機磁碟。" +
+        "請於 Vercel 專案的 Storage 分頁建立一個 Blob store(Access 選 Private)並連接至本專案," +
+        "完成後重新部署一次即可。",
+    );
+  }
   await mkdir(STORAGE_DIR, { recursive: true });
   const storedFilename = `${randomUUID()}.${ext}`;
   await writeFile(path.join(STORAGE_DIR, storedFilename), buf);
