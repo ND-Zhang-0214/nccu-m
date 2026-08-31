@@ -9,8 +9,15 @@
 // 因此這次換資料庫的改動範圍被限制在 src/server/db 與少數 repositories(見
 // repositories/attachments.ts 內對 better-sqlite3 專屬交易寫法的重寫說明)。
 // ─────────────────────────────────────────────────────────────
-import { pgTable, text, integer, boolean, timestamp, primaryKey, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, boolean, timestamp, primaryKey, uniqueIndex, index, customType } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+
+// PostgreSQL 的二進位型別。drizzle-orm 的 pg-core 沒有內建 bytea,依官方建議以
+// customType 定義;node-postgres 本來就會把 bytea 欄位讀成 Buffer、也接受 Buffer 作為
+// 參數,所以這裡不需要任何額外的編解碼。
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() { return "bytea"; },
+});
 
 const id = () => text("id").primaryKey().$defaultFn(() => crypto.randomUUID());
 const now = (col: string) => timestamp(col, { mode: "date", withTimezone: true }).notNull().default(sql`now()`);
@@ -553,3 +560,27 @@ export const studentRequests = pgTable("student_requests", {
   profStatusIdx: index("sr_prof_status").on(t.professorId, t.status),
   studentIdx: index("sr_student").on(t.studentId, t.createdAt),
 }));
+
+// ── 檔案內容儲存(2026-08-31 新增)────────────────────────────────
+// 為什麼會有這張表:免費的無伺服器託管(Vercel)沒有可寫入、可跨請求存活的磁碟,
+// 因此 private-uploads/ 那條路在雲端完全行不通。原本的替代方案是 Vercel Blob,
+// 但那需要使用者另外到主控台建立一個 Blob store 並重新部署——對「只是想把網址丟給
+// 別人試用」的情境來說,是一道沒有必要的額外關卡,而且忘記最後那步 Redeploy 就會
+// 得到一個看起來像壞掉的上傳功能。
+//
+// 這裡改用一個已經存在、不需要再申請任何東西的儲存空間:同一個 PostgreSQL 資料庫。
+// 群組共用檔案單檔上限 5MB、申請附件 10MB,而 Neon 免費方案有 0.5GB,對示範與試用
+// 的量體綽綽有餘。真的成長到需要專用物件儲存時,只要設定 BLOB_READ_WRITE_TOKEN,
+// storage.ts 會自動改走 Blob,呼叫端一行都不用改(這正是當初把儲存收斂成
+// saveFile/readFile/deleteFile 三個函式的用意)。
+//
+// 刻意獨立一張表,而不是在 attachments 上加一個 bytea 欄位:attachments 會被列表
+// 頁頻繁查詢,而 storage.ts 是一層與業務無關的通用儲存介面,不應該反過來依賴
+// attachments 這張業務表。兩者以 storedFilename 這個「儲存端識別碼」相連。
+export const fileBlobs = pgTable("file_blobs", {
+  storedFilename: text("stored_filename").primaryKey(), // 對應 attachments.storedFilename
+  data: bytea("data").notNull(),
+  mimeType: text("mime_type").notNull().default(""),
+  sizeBytes: integer("size_bytes").notNull().default(0),
+  createdAt: now("created_at"),
+});

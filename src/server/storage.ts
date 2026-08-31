@@ -14,10 +14,28 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, readFile as fsReadFile, unlink } from "node:fs/promises";
 import path from "node:path";
+import { eq } from "drizzle-orm";
 import { put, del as blobDel, get as blobGet } from "@vercel/blob";
+import { db } from "@/server/db/client";
+import * as t from "@/server/db/schema";
 
 const STORAGE_DIR = path.join(process.cwd(), "private-uploads");
 const useBlob = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+
+// 2026-08-31 新增的第三種後端:存進 PostgreSQL。
+// ─────────────────────────────────────────────────────────────
+// 補的是一個原本會直接卡死使用者的缺口。此前的邏輯只有兩條路:有 Blob token 就走
+// Vercel Blob,否則寫本機磁碟。但部署在無伺服器平台時磁碟是唯讀的,於是「沒有另外去
+// 建立 Blob store」的站台,上傳一定失敗——而建 Blob store 是一連串主控台操作,最後
+// 還有一個很容易漏掉的重新部署步驟,對只是想把網址丟給人試用的情況來說太重了。
+//
+// 但這種站台其實已經有一個現成、且必定已經設定好的儲存空間:它自己的 PostgreSQL。
+// 單檔上限 5–10MB,Neon 免費方案 0.5GB,試用與示範綽綽有餘。因此優先序改為:
+//   1. 有 BLOB_READ_WRITE_TOKEN → Vercel Blob(檔案量大時的正解,行為完全不變)
+//   2. 沒有 Blob 但磁碟不可寫(無伺服器)→ PostgreSQL
+//   3. 兩者皆非(本機開發、自架主機)→ 維持原本寫 private-uploads/ 的行為
+// 三條路的進出口仍是同樣的 saveFile/readFile/deleteFile,呼叫端完全不需要知道差別。
+const useDb = () => !useBlob() && Boolean(process.env.VERCEL);
 
 // ── §6 類型白名單:以檔案內容特徵(magic number)判斷,不信任副檔名或使用者端聲稱的 Content-Type ──
 const MAGIC_NUMBERS: Array<{ mime: string; ext: string; check: (buf: Buffer) => boolean }> = [
@@ -67,15 +85,13 @@ export async function saveFile(buf: Buffer, ext: string): Promise<string> {
     });
     return blob.url;
   }
-  // 2026-08-31 新增的防呆:部署在 Vercel(或任何無伺服器平台)但沒設定 Blob 時,
-  // 下面的本機目錄寫入會因為檔案系統唯讀而失敗,錯誤訊息是看不懂的 EROFS。
-  // 與其讓使用者上傳到一半拿到系統層錯誤,不如在這裡就講清楚原因與解法。
-  if (process.env.VERCEL) {
-    throw new Error(
-      "檔案上傳尚未設定:此站台部署於無伺服器環境,無法寫入本機磁碟。" +
-        "請於 Vercel 專案的 Storage 分頁建立一個 Blob store(Access 選 Private)並連接至本專案," +
-        "完成後重新部署一次即可。",
-    );
+  // 無伺服器環境且未設定 Blob:存進資料庫(見檔頭 useDb 的說明)。
+  // 這條路取代了原本「拋出錯誤要使用者先去建 Blob store」的行為——那個做法雖然訊息
+  // 清楚,但使用者依然是卡住的,而這裡其實有辦法讓它直接可用。
+  if (useDb()) {
+    const storedFilename = `${randomUUID()}.${ext}`;
+    await db.insert(t.fileBlobs).values({ storedFilename, data: buf, sizeBytes: buf.length });
+    return storedFilename;
   }
   await mkdir(STORAGE_DIR, { recursive: true });
   const storedFilename = `${randomUUID()}.${ext}`;
@@ -89,6 +105,12 @@ export async function readFile(storedFilename: string): Promise<Buffer> {
     if (!result || !result.stream) throw new Error(`Blob not found: ${storedFilename}`);
     return Buffer.from(await new Response(result.stream).arrayBuffer());
   }
+  if (useDb()) {
+    const [row] = await db.select({ data: t.fileBlobs.data }).from(t.fileBlobs)
+      .where(eq(t.fileBlobs.storedFilename, storedFilename));
+    if (!row) throw new Error(`File not found: ${storedFilename}`);
+    return row.data;
+  }
   // 防路徑穿越:即使 storedFilename 來源不可信,也不允許跳出儲存目錄
   const safe = path.basename(storedFilename);
   return fsReadFile(path.join(STORAGE_DIR, safe));
@@ -98,6 +120,10 @@ export async function deleteFile(storedFilename: string): Promise<void> {
   if (useBlob()) {
     await blobDel(storedFilename).catch(() => {}); // 檔案已不存在時忽略,呼應原本本機模式的行為
     return;
+  }
+  if (useDb()) {
+    await db.delete(t.fileBlobs).where(eq(t.fileBlobs.storedFilename, storedFilename));
+    return; // DELETE 找不到列時不算錯誤,與下面本機模式忽略 ENOENT 的行為一致
   }
   const safe = path.basename(storedFilename);
   await unlink(path.join(STORAGE_DIR, safe)).catch(() => {}); // 檔案已不存在時忽略
