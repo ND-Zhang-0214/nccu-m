@@ -3,14 +3,51 @@
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db } from "./client";
 import * as t from "./schema";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const data = JSON.parse(readFileSync(join(here, "data", "nccu-structure.json"), "utf8"));
 
+// 2026-08-31:清掉一批「手動插入、但永遠登不進去」的帳號。
+// 背景:排查期間曾建議使用者直接在 Neon 主控台 INSERT 三個 *.test@ 帳號來測試,那是個
+// 錯誤的建議——登入流程會把驗證碼寄到該信箱,而這些信箱根本不存在,所以帳號建了也用不了,
+// 只是留在 users 表裡造成困惑。這裡主動清乾淨,使用者不需要自己回頭去下 SQL。
+// 刻意用完整 email 精確比對而不是 LIKE '%test%',避免誤刪掉名字裡剛好有 test 的真實帳號。
+const STRAY_TEST_EMAILS = [
+  "student.test@g.nccu.edu.tw",
+  "professor.test@nccu.edu.tw",
+  "admin.test@nccu.edu.tw",
+];
+
+async function cleanupStrayTestAccounts() {
+  const existing = await db.select({ id: t.users.id, email: t.users.email }).from(t.users)
+    .where(inArray(t.users.email, STRAY_TEST_EMAILS));
+  if (existing.length === 0) return;
+  await db.delete(t.users).where(inArray(t.users.email, STRAY_TEST_EMAILS));
+  console.log(`→ 已清除 ${existing.length} 個無法登入的手動測試帳號:${existing.map((u) => u.email).join("、")}`);
+}
+
 async function main() {
+  await cleanupStrayTestAccounts();
+
+  // 2026-08-31 新增的重複執行保護。
+  // ───────────────────────────────────────────────────────────
+  // 原本這支腳本預設「跑在剛被 db:reset 清空的資料庫上」,所以整支都是無條件 INSERT。
+  // 現在 scripts/prebuild.mjs 會在示範模式的雲端部署時自動呼叫它,而每次 push 都會觸發
+  // 一次建置——若不加保護,第二次部署就會撞上 colleges.name 的 unique 約束而整個建置失敗,
+  // 或在部分資料表留下重複列。因此改成:偵測到已經有資料就直接跳過,把這支腳本變成
+  // 「可以安全地重複執行任意次」。
+  //
+  // 判斷依據選 colleges 而不是 users:users 可能因為有人註冊而先有資料,
+  // colleges 則只會由這支腳本建立,是「種子資料到底跑過沒有」最準確的訊號。
+  const [existingCollege] = await db.select({ id: t.colleges.id }).from(t.colleges).limit(1);
+  if (existingCollege) {
+    console.log("✓ 資料庫已有種子資料,略過(這支腳本可安全重複執行)。");
+    return;
+  }
+
   console.log("→ 建立學院/系所/領域/子領域 …");
   const deptBySlug = new Map<string, string>();
   const subfieldByName = new Map<string, string>();

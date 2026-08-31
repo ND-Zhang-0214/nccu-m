@@ -8,6 +8,7 @@ import { and, eq, gt, isNull, lt, desc } from "drizzle-orm";
 import { chainHash } from "@/server/crypto";
 import { getActiveIdentityProvider } from "@/server/auth/providers";
 import { SESSION_COOKIE_NAME } from "@/server/session-cookie";
+import { isDemoMode } from "@/shared/demo-mode";
 
 // session cookie 名稱獨立在 session-cookie.ts:middleware.ts(Edge runtime)需要讀同一個
 // cookie 名稱做粗篩,但不能 import 這支檔案本身(頂層 import 了 db client,db client 底層
@@ -114,8 +115,12 @@ export async function verifyCodeAndLogin(email: string, code: string, meta?: { i
 // 帳密仍然「虛擬」在於:沒有真的密碼欄位或任何人工核對動作,單純是換一種(非常寬鬆的)
 // 身分核發方式,核發出來的 session 與真正走完驗證碼流程的 session 完全相同,不是假的
 // session、也不會少寫任何一筆稽核紀錄。
+// 2026-08-31 修正:原本的開放條件是 `NODE_ENV !== "production"`,結果部署到 Vercel 之後
+// (next build 產出的必然是 production)這支函式一律回傳 null,一鍵登入在「唯一需要拿來
+// present 的環境」反而完全不能用。改為由 isDemoMode() 的顯式環境變數決定,預設仍是關閉,
+// 但站台管理者可以自己決定要不要在線上開啟。詳見 src/shared/demo-mode.ts 的說明與風險提醒。
 export async function quickLoginDemo(email: string, meta?: { ip?: string; userAgent?: string }) {
-  if (process.env.NODE_ENV === "production") return null;
+  if (!isDemoMode()) return null;
   if (!isAllowedEmail(email)) return null;
   return establishSession(email, "demo-quick-login", meta);
 }

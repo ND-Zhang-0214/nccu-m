@@ -3,6 +3,7 @@ import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { quickLoginAction } from "@/app/actions";
 import { DEMO_PERSONAS } from "@/shared/categories";
+import { isDemoMode } from "@/shared/demo-mode";
 
 function LoginForm() {
   const router = useRouter();
@@ -70,14 +71,20 @@ function LoginForm() {
       )}
       {msg && <div className="notice">{msg}</div>}
 
-      {process.env.NODE_ENV !== "production" && (
+      {isDemoMode() && (
         <>
           <hr style={{ margin: "28px 0 20px", border: 0, borderTop: "1px solid var(--hairline)" }} />
-          <h2 style={{ fontSize: 15 }}>示範環境快速登入</h2>
+          <h2 style={{ fontSize: 15 }}>示範帳號快速登入</h2>
           <p className="lede" style={{ fontSize: 13 }}>
-            僅供 present 使用,略過驗證碼直接以示範帳號取得 session;正式環境(next build 後以
-            NODE_ENV=production 執行)不會顯示這一區,伺服器端 quickLoginAction 也會直接拒絕執行。
+            略過驗證碼直接以示範帳號取得 session,供展示與試用。三個帳號各自有預先建立的內容
+            (教授已連結個人檔案與開放的學生請求類型、學生已有申請與推薦信紀錄),登入後即可
+            看到實際畫面,不需要自己先建資料。
           </p>
+          <div className="notice" style={{ fontSize: 13 }}>
+            這個站台目前處於<strong>示範模式</strong>(環境變數 <code>NEXT_PUBLIC_DEMO_MODE=1</code>)。
+            任何知道網址的人都能用下列身分直接登入,因此<strong>請勿在此輸入任何真實個人資料</strong>。
+            要關閉:移除該環境變數後重新部署即可。
+          </div>
           {DEMO_PERSONAS.map((p) => (
             <form key={p.key} className="stack" action={quickLoginAction}>
               <input type="hidden" name="persona" value={p.key} />

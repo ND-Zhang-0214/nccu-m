@@ -31,6 +31,7 @@ import {
   studentRequestSchema, parseRequestPayload, respondRequestSchema, finalizeRecommendationSchema,
 } from "@/server/schemas";
 import { REQUEST_TYPES, REQUEST_STATUS_LABELS, DEMO_PERSONAS } from "@/shared/categories";
+import { isDemoMode } from "@/shared/demo-mode";
 import {
   getIntakeSetting, upsertIntakeSetting, createStudentRequest, hasActiveRequest,
   respondToRequest, finalizeRecommendation,
@@ -121,8 +122,11 @@ export async function signTermsAction(formData: FormData) {
 // present」:示範用一鍵登入表單的伺服器端處理。DEMO_PERSONAS 清單放在 shared/categories.ts
 // (client component 也需要引用來畫按鈕),這裡只認清單裡存在的 key,不接受任意 email——
 // 比外部直接接受任意輸入 + NODE_ENV 判斷更保守一層,即使有人繞過 UI 直接送表單也一樣。
+// 2026-08-31:判斷條件由 NODE_ENV 改為 isDemoMode()(理由見 shared/demo-mode.ts)。
+// 這裡的檢查是「防呆的第一層」,真正的信任邊界仍在 quickLoginDemo() 內——即使有人繞過
+// 這裡直接呼叫,那支函式也會再檢查一次 isDemoMode(),兩層用的是同一個判斷來源。
 export async function quickLoginAction(formData: FormData) {
-  if (process.env.NODE_ENV === "production") redirect("/login");
+  if (!isDemoMode()) redirect("/login");
   const persona = DEMO_PERSONAS.find((p) => p.key === String(formData.get("persona") || ""));
   const nextRaw = String(formData.get("next") || "");
   const next = isSafeNextPath(nextRaw) ? nextRaw : "";
