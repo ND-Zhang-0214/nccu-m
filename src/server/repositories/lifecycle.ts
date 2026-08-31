@@ -68,15 +68,21 @@ export async function processLifecycleTransitions(): Promise<{
       "畢業緩衝期已結束,帳號轉為唯讀,可查看歷史紀錄但無法再發起新的媒合。", "/");
 
     // 白皮書 2.13:「轉為 ALUM 後,產生封存檔,寄送僅含一次性下載連結的信件,連結 30 天到期」。
-    // 一次性連結本身即為存取憑證(見 data-export.ts 檔頭簡化說明);EMAIL 提醒比照
-    // group_file 到期提醒/auth.ts issueCode() 的既有 mock 慣例,以 audit 留下紀錄,
-    // demo 環境沒有真實寄信服務可接。站內通知(平台提醒)則是真的會出現在使用者通知列表。
+    // 一次性連結本身即為存取憑證(見 data-export.ts 檔頭簡化說明)。EMAIL 提醒 2026-08 起
+    // 接上 email.ts 的 Resend 寄信服務(未設定 RESEND_API_KEY 時 sendEmail 直接回傳
+    // { sent: false},不影響批次繼續執行)。站內通知(平台提醒)則是真的會出現在使用者
+    // 通知列表,不論信件是否寄出都會有。
     const { issueExportToken } = await import("./data-export");
+    const { sendEmail, appBaseUrl } = await import("@/server/email");
     const exportToken = await issueExportToken(u.id);
     await notify(u.id, "data_export.available", "你的一次性資料匯出連結已產生",
       "帳號已轉為校友,系統已為你產生一次性資料匯出連結(30 天內有效,使用一次後即失效)。點此立即下載完整資料備份。",
       `/api/export/${exportToken}`);
-    await audit(null, "data_export.graduation_email_mock", "USER", u.id, { to: u.email });
+    const { sent } = await sendEmail(
+      u.email, "【政大研究媒合平台】你的帳號已轉為校友,資料匯出連結已產生",
+      `帳號已轉為校友(唯讀)狀態。系統已為你產生一次性資料匯出連結,30 天內有效,使用一次後即失效:\n${appBaseUrl()}/api/export/${exportToken}`,
+    );
+    await audit(null, "data_export.graduation_email", "USER", u.id, { to: u.email, sent });
   }
 
   const relinquishClosed = await processRelinquishments();
@@ -89,12 +95,11 @@ export async function processLifecycleTransitions(): Promise<{
 }
 
 /** 白皮書 2.7.2:群組共用檔案「單檔僅保留一個月,到期前一週提醒(平台提醒+EMAIL提醒)」。
- *  「平台提醒」是真的運作的站內通知;「EMAIL 提醒」比照 auth.ts issueCode() 的既有取捨——
- *  本環境沒有真實寄信服務可接(白皮書本身也註明此設定須寫入使用條款,屬將來要接的機制),
- *  demo 環境改以 audit 留下「本應寄出一封提醒信」的紀錄(含收件信箱),正式環境要接上
- *  真實寄信服務時,只需在下方標記處改為實際呼叫,呼叫端(本函式)完全不用改。
- *  排程本身留待任務 #17(node-cron)接上,這裡先確保「到期就真的會刪除/提醒」這條邏輯
- *  是可運作的,只是觸發時機目前仍是手動(/admin/lifecycle)或本函式的呼叫端。 */
+ *  「平台提醒」是真的運作的站內通知;「EMAIL 提醒」2026-08 起接上 email.ts 的 Resend
+ *  寄信服務(未設定 RESEND_API_KEY 時 sendEmail 直接回傳 { sent: false},不影響批次
+ *  繼續執行,audit 紀錄裡的 sent 欄位如實反映有沒有真的寄出)。
+ *  排程本身由任務 #17(node-cron/Vercel Cron)接上,這裡先確保「到期就真的會刪除/提醒」
+ *  這條邏輯是可運作的,觸發時機則是排程或 /admin/lifecycle 手動觸發。 */
 async function expireAndRemindGroupFiles(): Promise<{ expired: number; reminded: number }> {
   const { listAttachmentsWithExpiry, deleteAttachment } = await import("./attachments");
   const { listGroupMembers } = await import("./groups");
@@ -123,11 +128,16 @@ async function expireAndRemindGroupFiles(): Promise<{ expired: number; reminded:
       await db.update(t.attachments).set({ expiryRemindedAt: new Date() }).where(eq(t.attachments.id, att.id));
       const members = await listGroupMembers(att.groupId);
       const expiresAtLabel = att.expiresAt.toLocaleDateString("zh-TW");
+      const { sendEmail, appBaseUrl } = await import("@/server/email");
       for (const m of members) {
         await notify(m.userId, "group_file.expiring_soon", "群組檔案即將到期",
           `「${att.originalName}」將於 ${expiresAtLabel} 到期並自動刪除,如需保留請自行下載備份。`, `/groups/${att.groupId}`);
-        // 正式環境:在此改為呼叫真實寄信服務(比照 auth.ts issueCode() 的既有標記慣例)。
-        await audit(null, "group_file.expiry_email_mock", "ATTACHMENT", att.id, { to: m.user?.email ?? "", groupId: att.groupId });
+        const to = m.user?.email ?? "";
+        const { sent } = await sendEmail(
+          to, `【政大研究媒合平台】群組檔案「${att.originalName}」即將到期`,
+          `「${att.originalName}」將於 ${expiresAtLabel} 到期並自動刪除,如需保留請自行下載備份:\n${appBaseUrl()}/groups/${att.groupId}`,
+        );
+        await audit(null, "group_file.expiry_email", "ATTACHMENT", att.id, { to, groupId: att.groupId, sent });
       }
       reminded++;
     }

@@ -29,13 +29,18 @@ export function isAllowedEmail(email: string): boolean {
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
-export async function issueCode(email: string): Promise<string> {
+export async function issueCode(email: string): Promise<{ code: string; sent: boolean }> {
   const code = String(randomInt(100000, 999999));
   await db.insert(t.emailVerifications).values({
     email, code: sha256(code), expiresAt: new Date(Date.now() + 10 * 60 * 1000),
   });
-  // 正式環境:在此改為呼叫寄信服務,絕不回傳 code
-  return code;
+  // 2026-08:接上 email.ts 的 Resend 寄信服務。未設定 RESEND_API_KEY 時(本機開發預設
+  // 狀態)sent 恆為 false,呼叫端(request-code 路由)靠 devCode 測試,不受影響。
+  const { sendVerificationCodeEmail } = await import("@/server/email");
+  const { sent } = await sendVerificationCodeEmail(email, code);
+  // 呼叫端(route)仍拿得到 code,是因為開發環境要回傳 devCode 方便測試;正式環境
+  // 絕不把 code 放進 HTTP 回應——這件事由 route 依 NODE_ENV 判斷,不是這裡負責。
+  return { code, sent };
 }
 
 /** 核發 session 的共用邏輯:不論是走真的驗證碼流程(verifyCodeAndLogin)或示範環境的
