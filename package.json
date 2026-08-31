@@ -4,27 +4,28 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/prebuild.mjs && next build",
     "start": "next start",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:seed": "tsx src/server/db/seed.ts",
-    "db:reset": "rm -f dev.db && drizzle-kit migrate && tsx src/server/db/seed.ts"
+    "db:seed": "tsx --env-file=.env src/server/db/seed.ts",
+    "db:reset": "tsx --env-file=.env src/server/db/reset.ts && drizzle-kit migrate && tsx --env-file=.env src/server/db/seed.ts"
   },
   "dependencies": {
-    "better-sqlite3": "^11.3.0",
+    "@vercel/blob": "^2.8.0",
     "drizzle-orm": "^0.45.2",
     "next": "^14.2.15",
     "node-cron": "^4.2.1",
     "otplib": "^12.0.1",
+    "pg": "^8.23.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.20.1",
     "@types/node-cron": "^3.0.11",
+    "@types/pg": "^8.23.1",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "drizzle-kit": "^0.31.10",
