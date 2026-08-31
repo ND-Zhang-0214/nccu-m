@@ -1,14 +1,23 @@
 // 私有檔案儲存抽象層(§6)
 // ─────────────────────────────────────────────────────────────
-// 目前實作:存在伺服器本機的 private-uploads/ 目錄(不在 public/,Next.js 不會把它
-// 當靜態資源自動提供,沒有任何固定網址可以直接存取)。正式環境要換成雲端物件儲存
-// (S3/GCS 等)時,只需重寫本檔案的 saveFile()/readFile()/deleteFile() 三個函式,
-// 呼叫端(repositories/attachments.ts、API route)完全不需要跟著改。
+// 2026-08 換資料庫/託管紀錄:免費無伺服器託管(Vercel)沒有可長駐、跨請求共用的本機
+// 檔案系統,private-uploads/ 目錄寫入的內容在下一次請求或函式冷啟動後就可能消失。
+// 因此改為視環境自動切換儲存後端,呼叫端(repositories/attachments.ts、API route)
+// 完全不需要跟著改——這正是原本設計 saveFile()/readFile()/deleteFile() 三個函式作為
+// 唯一進出口的目的:
+//   - 有設定 BLOB_READ_WRITE_TOKEN(部署在 Vercel 且已連接 Blob store)時:走 Vercel Blob
+//     私有儲存(access:"private",沒有可公開直接存取的網址,只能透過本檔案的 readFile()
+//     搭配 BLOB_READ_WRITE_TOKEN 在伺服器端讀取——維持與原本本機檔案「不可直接以固定
+//     網址存取」相同的安全性質)。
+//   - 未設定時(本機開發、或未來自架伺服器):維持原本寫本機 private-uploads/ 目錄的行為,
+//     不需要另外申請 Blob store 才能跑 npm run dev。
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, readFile as fsReadFile, unlink } from "node:fs/promises";
 import path from "node:path";
+import { put, del as blobDel, get as blobGet } from "@vercel/blob";
 
 const STORAGE_DIR = path.join(process.cwd(), "private-uploads");
+const useBlob = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 
 // ── §6 類型白名單:以檔案內容特徵(magic number)判斷,不信任副檔名或使用者端聲稱的 Content-Type ──
 const MAGIC_NUMBERS: Array<{ mime: string; ext: string; check: (buf: Buffer) => boolean }> = [
@@ -47,8 +56,17 @@ export function detectFileType(buf: Buffer): { mime: string; ext: string } | nul
   return hit ? { mime: hit.mime, ext: hit.ext } : null;
 }
 
-/** 儲存檔案,回傳系統隨機產生的檔名(與使用者原始檔名完全無關,防路徑穿越攻擊)。 */
+/** 儲存檔案,回傳儲存端識別碼(Blob 模式為私有 blob 網址;本機模式為系統隨機檔名)——
+ *  與使用者原始檔名完全無關,防路徑穿越攻擊。呼叫端只需把回傳值原樣存進
+ *  attachments.storedFilename,不需要知道背後是哪種儲存後端。 */
 export async function saveFile(buf: Buffer, ext: string): Promise<string> {
+  if (useBlob()) {
+    const blob = await put(`attachments/${randomUUID()}.${ext}`, buf, {
+      access: "private",
+      addRandomSuffix: true,
+    });
+    return blob.url;
+  }
   await mkdir(STORAGE_DIR, { recursive: true });
   const storedFilename = `${randomUUID()}.${ext}`;
   await writeFile(path.join(STORAGE_DIR, storedFilename), buf);
@@ -56,12 +74,21 @@ export async function saveFile(buf: Buffer, ext: string): Promise<string> {
 }
 
 export async function readFile(storedFilename: string): Promise<Buffer> {
+  if (useBlob()) {
+    const result = await blobGet(storedFilename, { access: "private" });
+    if (!result || !result.stream) throw new Error(`Blob not found: ${storedFilename}`);
+    return Buffer.from(await new Response(result.stream).arrayBuffer());
+  }
   // 防路徑穿越:即使 storedFilename 來源不可信,也不允許跳出儲存目錄
   const safe = path.basename(storedFilename);
   return fsReadFile(path.join(STORAGE_DIR, safe));
 }
 
 export async function deleteFile(storedFilename: string): Promise<void> {
+  if (useBlob()) {
+    await blobDel(storedFilename).catch(() => {}); // 檔案已不存在時忽略,呼應原本本機模式的行為
+    return;
+  }
   const safe = path.basename(storedFilename);
   await unlink(path.join(STORAGE_DIR, safe)).catch(() => {}); // 檔案已不存在時忽略
 }
