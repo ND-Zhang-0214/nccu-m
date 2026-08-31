@@ -12,7 +12,7 @@
     "db:reset": "rm -f dev.db && drizzle-kit migrate && tsx src/server/db/seed.ts"
   },
   "dependencies": {
-    "better-sqlite3": "^11.3.0",
+    "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
     "next": "^14.2.15",
     "node-cron": "^4.2.1",
