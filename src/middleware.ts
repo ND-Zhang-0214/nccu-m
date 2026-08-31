@@ -30,7 +30,7 @@ export function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
   // §2.11.4 全站登入門檻,粗篩層:只檢查 session cookie 存不存在。middleware 跑在 Edge
-  // runtime,better-sqlite3 是原生 Node 模組無法在此查資料庫做真正的 session 驗證(是否過期、
+  // runtime,pg 用到 Node.js 原生 TCP/TLS socket 無法在此查資料庫做真正的 session 驗證(是否過期、
   // 是否已被撤銷等)——那一層權威複查留給 src/server/authz.ts 的 requireUser(),兩層各司
   // 其職:這裡擋掉「連 cookie 都沒有」的大宗匿名流量,省下整頁渲染與資料庫查詢的成本;
   // requireUser() 擋掉「cookie 存在但已失效」這種只有查資料庫才知道的情況。

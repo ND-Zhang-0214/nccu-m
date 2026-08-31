@@ -1,21 +1,24 @@
-// 資料庫 schema(Drizzle ORM / SQLite)
+// 資料庫 schema(Drizzle ORM / PostgreSQL)
 // ─────────────────────────────────────────────────────────────
-// 換資料庫指南(給後續接手的工程師):
-// 1. Drizzle 原生支援 PostgreSQL:將本檔 import 來源自 "drizzle-orm/sqlite-core"
-//    改為 "drizzle-orm/pg-core",對應型別(text→text, integer→integer/serial,
-//    integer timestamp→timestamp)後即可沿用同一套查詢語法。
-// 2. 業務程式碼一律透過 src/server/repositories 存取資料,不直接 import 本檔,
-//    因此換資料庫或換 ORM 的改動範圍被限制在 src/server/db 與 repositories 內。
+// 2026-08 換資料庫紀錄:原為 SQLite(drizzle-orm/sqlite-core),本輪依白皮書 3.1
+// 「正式環境 PostgreSQL」改為 drizzle-orm/pg-core,原因是免費 24/7 託管(Vercel)
+// 的無伺服器環境沒有可長駐的本機檔案系統,SQLite 檔案無法安全存活。
+// 換動對照:text→text(不變)、integer(mode:boolean)→boolean、
+// integer(mode:timestamp)→timestamp(withTimezone:true)、其餘 integer 不變。
+// 業務程式碼一律透過 src/server/repositories 存取資料,不直接 import 本檔,
+// 因此這次換資料庫的改動範圍被限制在 src/server/db 與少數 repositories(見
+// repositories/attachments.ts 內對 better-sqlite3 專屬交易寫法的重寫說明)。
 // ─────────────────────────────────────────────────────────────
-import { sqliteTable, text, integer, primaryKey, uniqueIndex, index } from "drizzle-orm/sqlite-core";
+import { pgTable, text, integer, boolean, timestamp, primaryKey, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 const id = () => text("id").primaryKey().$defaultFn(() => crypto.randomUUID());
-const now = (col: string) => integer(col, { mode: "timestamp" }).notNull().default(sql`(unixepoch())`);
+const now = (col: string) => timestamp(col, { mode: "date", withTimezone: true }).notNull().default(sql`now()`);
+const ts = (col: string) => timestamp(col, { mode: "date", withTimezone: true });
 
 // ── 身分層 ────────────────────────────────────────────────
 
-export const users = sqliteTable("users", {
+export const users = pgTable("users", {
   id: id(), // 內部 ID:不具業務意義,永不對外顯示
   email: text("email").notNull().unique(),
   displayName: text("display_name").notNull(), // 平台暱稱(對外顯示,可申請修改,見 2.2.2)
@@ -31,34 +34,34 @@ export const users = sqliteTable("users", {
   // 刻意不取代既有的 role=STUDENT_GRAD(避免大改既有判斷式),兩個訊號並存、任一為真即視為研究生,
   // 這裡新增的是白皮書要求的「自填+未驗證標示+特定功能才需驗證」路徑。
   degreeLevel: text("degree_level"), // null | BACHELOR | MASTER | PHD(使用者自填)
-  degreeLevelVerifiedAt: integer("degree_level_verified_at", { mode: "timestamp" }), // 由指導教授確認後寫入,見 2.2.3
+  degreeLevelVerifiedAt: ts("degree_level_verified_at"), // 由指導教授確認後寫入,見 2.2.3
   totpSecretEnc: text("totp_secret_enc"), // §2.5:管理員 2FA 種子(加密儲存,見 crypto.ts)
-  totpEnabled: integer("totp_enabled", { mode: "boolean" }).notNull().default(false),
+  totpEnabled: boolean("totp_enabled").notNull().default(false),
   // ── 帳號生命週期自動化(架構書 §帳號生命週期)──
   // 偵測到「可能已離校」(email 失效訊號)後,不立即降級,而是進入 6 個月緩衝期,
   // bufferEndsAt 到期後才自動轉為 ALUM(唯讀)。正式環境的偵測來源應是教務處 API
   // 或信箱退信偵測,目前以管理員手動觸發模擬(見 lifecycle.ts 檔頭說明)。
-  lifecycleBufferEndsAt: integer("lifecycle_buffer_ends_at", { mode: "timestamp" }),
+  lifecycleBufferEndsAt: ts("lifecycle_buffer_ends_at"),
   lifecycleNote: text("lifecycle_note").notNull().default(""),
   createdAt: now("created_at"),
 });
 
-export const emailVerifications = sqliteTable("email_verifications", {
+export const emailVerifications = pgTable("email_verifications", {
   id: id(),
   email: text("email").notNull(),
   code: text("code").notNull(),
-  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
-  consumedAt: integer("consumed_at", { mode: "timestamp" }),
+  expiresAt: ts("expires_at").notNull(),
+  consumedAt: ts("consumed_at"),
   createdAt: now("created_at"),
 }, (t) => ({ emailCodeIdx: index("ev_email_code").on(t.email, t.code) }));
 
-export const sessions = sqliteTable("sessions", {
+export const sessions = pgTable("sessions", {
   id: id(),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   tokenHash: text("token_hash").notNull().unique(), // 只存雜湊,不存明文 token
-  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(), // §2.4:絕對逾時
+  expiresAt: ts("expires_at").notNull(), // §2.4:絕對逾時
   lastUsedAt: now("last_used_at"), // §2.4:閒置逾時判斷依據
-  stepUpAt: integer("step_up_at", { mode: "timestamp" }), // §2.5:最近一次敏感操作重驗時間
+  stepUpAt: ts("step_up_at"), // §2.5:最近一次敏感操作重驗時間
   // 白皮書 3.2.5「登入裝置清單與強制登出」:純粹顯示用資訊,不作為安全判斷依據
   // (偽造 User-Agent 很容易,這裡只是方便使用者自己辨認「這是不是我的裝置」)。
   userAgent: text("user_agent").notNull().default(""),
@@ -72,14 +75,14 @@ export const sessions = sqliteTable("sessions", {
 
 // ── 學術分類層(學院 → 系所 → 領域 → 子領域)──────────────
 
-export const colleges = sqliteTable("colleges", {
+export const colleges = pgTable("colleges", {
   id: id(),
   name: text("name").notNull().unique(),
   slug: text("slug").notNull().unique(),
   sortOrder: integer("sort_order").notNull().default(0),
 });
 
-export const departments = sqliteTable("departments", {
+export const departments = pgTable("departments", {
   id: id(),
   collegeId: text("college_id").notNull().references(() => colleges.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
@@ -90,14 +93,14 @@ export const departments = sqliteTable("departments", {
   collegeIdx: index("d_college").on(t.collegeId),
 }));
 
-export const fields = sqliteTable("fields", {
+export const fields = pgTable("fields", {
   id: id(),
   departmentId: text("department_id").notNull().references(() => departments.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   sortOrder: integer("sort_order").notNull().default(0),
 }, (t) => ({ deptIdx: index("f_dept").on(t.departmentId) }));
 
-export const subfields = sqliteTable("subfields", {
+export const subfields = pgTable("subfields", {
   id: id(),
   fieldId: text("field_id").notNull().references(() => fields.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
@@ -106,7 +109,7 @@ export const subfields = sqliteTable("subfields", {
 
 // ── 教授檔案 ──────────────────────────────────────────────
 
-export const professorProfiles = sqliteTable("professor_profiles", {
+export const professorProfiles = pgTable("professor_profiles", {
   id: id(),
   userId: text("user_id").unique().references(() => users.id), // 可空:目錄先建檔,教授之後認領
   displayName: text("display_name").notNull(),
@@ -114,11 +117,11 @@ export const professorProfiles = sqliteTable("professor_profiles", {
   departmentId: text("department_id").notNull().references(() => departments.id),
   bio: text("bio").notNull().default(""),
   researchPage: text("research_page").notNull().default(""),
-  isOpen: integer("is_open", { mode: "boolean" }).notNull().default(true), // 媒合一鍵開關
+  isOpen: boolean("is_open").notNull().default(true), // 媒合一鍵開關
   verifyStatus: text("verify_status").notNull().default("SEED"), // SEED | PENDING | APPROVED | REJECTED
 }, (t) => ({ deptIdx: index("p_dept").on(t.departmentId) }));
 
-export const professorSpecialties = sqliteTable("professor_specialties", {
+export const professorSpecialties = pgTable("professor_specialties", {
   professorId: text("professor_id").notNull().references(() => professorProfiles.id, { onDelete: "cascade" }),
   subfieldId: text("subfield_id").notNull().references(() => subfields.id, { onDelete: "cascade" }),
 }, (t) => ({
@@ -137,7 +140,7 @@ export const professorSpecialties = sqliteTable("professor_specialties", {
 // 白皮書 2.5「單位帳號」(系辦、職涯中心等)。刻意比照 professorProfiles 掛在單一 users 帳號下
 // (2.5.1「允許多處同時登入」講的是同一組帳密多人共用,不是每個承辦人各自開帳號),
 // 差別在於單位沒有目錄瀏覽身分,只用來發布 postings(見下方 posterType)。
-export const unitProfiles = sqliteTable("unit_profiles", {
+export const unitProfiles = pgTable("unit_profiles", {
   id: id(),
   userId: text("user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(), // 如「外文系系辦」「職涯發展中心」
@@ -146,7 +149,7 @@ export const unitProfiles = sqliteTable("unit_profiles", {
   createdAt: now("created_at"),
 });
 
-export const postings = sqliteTable("postings", {
+export const postings = pgTable("postings", {
   id: id(),
   // 白皮書 2.1「事由 × 發起方」:發起方不再只能是教授。posterType 決定下面三個發起人欄位
   // 哪一個有值,其餘為 null——三選一而非各開一張子表,是因為 applications/interviewSlots/
@@ -164,7 +167,7 @@ export const postings = sqliteTable("postings", {
   // 白皮書 2.5.3/2.6.2:工讀職缺與學生合作專區都有各自的結構化欄位,不want五花八門另開很多張
   // 只用得到一次的表,沿用 studentRequests.payload 已經在用的「類別專屬 JSON 欄位」慣例。
   structuredFields: text("structured_fields").notNull().default("{}"),
-  isOpen: integer("is_open", { mode: "boolean" }).notNull().default(true),
+  isOpen: boolean("is_open").notNull().default(true),
   closedReason: text("closed_reason").notNull().default(""), // 空字串=手動關閉;professor_relinquished 等=系統自動關閉
   // 白皮書 2.8.1 編輯歷史:每次編輯遞增,搭配 postingVersions 表記錄「編輯前」快照。
   currentVersion: integer("current_version").notNull().default(1),
@@ -178,7 +181,7 @@ export const postings = sqliteTable("postings", {
 
 // 白皮書 2.8.1/2.8.2:貼文編輯歷史。存的是「編輯前」的內容(即這個版本號實際生效的期間是
 // 從上一版編輯時間到這次編輯時間),配合 postings.currentVersion 可還原任一時間點的完整內容。
-export const postingVersions = sqliteTable("posting_versions", {
+export const postingVersions = pgTable("posting_versions", {
   id: id(),
   postingId: text("posting_id").notNull().references(() => postings.id, { onDelete: "cascade" }),
   versionNumber: integer("version_number").notNull(),
@@ -189,7 +192,7 @@ export const postingVersions = sqliteTable("posting_versions", {
   editedAt: now("edited_at"),
 }, (t) => ({ postingIdx: index("pv_posting").on(t.postingId, t.versionNumber) }));
 
-export const applications = sqliteTable("applications", {
+export const applications = pgTable("applications", {
   id: id(),
   postingId: text("posting_id").notNull().references(() => postings.id, { onDelete: "cascade" }),
   applicantId: text("applicant_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -201,7 +204,7 @@ export const applications = sqliteTable("applications", {
   // 「申請當下貼文長什麼樣子」,因此記錄申請當下的 postings.currentVersion。
   appliedAtVersion: integer("applied_at_version").notNull().default(1),
   createdAt: now("created_at"),
-  statusUpdatedAt: integer("status_updated_at", { mode: "timestamp" }), // 學期報告「平均審核時間」統計用
+  statusUpdatedAt: ts("status_updated_at"), // 學期報告「平均審核時間」統計用
 }, (t) => ({
   uq: uniqueIndex("a_posting_applicant").on(t.postingId, t.applicantId), // 不可重複申請
   applicantIdx: index("a_applicant").on(t.applicantId, t.createdAt),
@@ -209,7 +212,7 @@ export const applications = sqliteTable("applications", {
 
 // ── 存證層(L3)────────────────────────────────────────────
 
-export const agreementLogs = sqliteTable("agreement_logs", {
+export const agreementLogs = pgTable("agreement_logs", {
   id: id(),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   docType: text("doc_type").notNull(), // TERMS | NDA
@@ -221,7 +224,7 @@ export const agreementLogs = sqliteTable("agreement_logs", {
   signedAt: now("signed_at"),
 }, (t) => ({ userDocIdx: index("ag_user_doc").on(t.userId, t.docType) }));
 
-export const reports = sqliteTable("reports", {
+export const reports = pgTable("reports", {
   id: id(),
   reporterId: text("reporter_id").notNull().references(() => users.id),
   targetType: text("target_type").notNull(), // POSTING | PROFESSOR | USER
@@ -230,23 +233,23 @@ export const reports = sqliteTable("reports", {
   status: text("status").notNull().default("open"), // open | resolved | dismissed
   outcome: text("outcome").notNull().default(""), // 供檢舉成立比例統計
   createdAt: now("created_at"),
-  resolvedAt: integer("resolved_at", { mode: "timestamp" }), // 學期報告「平均處理時效」統計用
+  resolvedAt: ts("resolved_at"), // 學期報告「平均處理時效」統計用
 }, (t) => ({ statusIdx: index("r_status").on(t.status, t.createdAt) }));
 
 // ── 通知(供「檢舉/申請結果中性通知」「進度可視化」使用)──────
 
-export const notifications = sqliteTable("notifications", {
+export const notifications = pgTable("notifications", {
   id: id(),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   type: text("type").notNull(), // application.status | report.resolved | report.filed_against_you | professor.verified
   title: text("title").notNull(),
   body: text("body").notNull().default(""),
   link: text("link").notNull().default(""),
-  isRead: integer("is_read", { mode: "boolean" }).notNull().default(false),
+  isRead: boolean("is_read").notNull().default(false),
   createdAt: now("created_at"),
 }, (t) => ({ userIdx: index("n_user").on(t.userId, t.isRead) }));
 
-export const auditLogs = sqliteTable("audit_logs", {
+export const auditLogs = pgTable("audit_logs", {
   id: id(),
   actorId: text("actor_id").references(() => users.id),
   action: text("action").notNull(),
@@ -262,11 +265,11 @@ export const auditLogs = sqliteTable("audit_logs", {
 // 正式環境可換 Redis(高頻寫入/自動過期更合適),介面收斂在 repositories/ratelimit.ts,
 // 頁面與 Server Action 一律不直接碰這張表。
 
-export const loginAttempts = sqliteTable("login_attempts", {
+export const loginAttempts = pgTable("login_attempts", {
   id: id(),
   email: text("email").notNull(),
   ip: text("ip").notNull(),
-  ok: integer("ok", { mode: "boolean" }).notNull(),
+  ok: boolean("ok").notNull(),
   createdAt: now("created_at"),
 }, (t) => ({
   emailTimeIdx: index("la_email_time").on(t.email, t.createdAt),
@@ -277,7 +280,7 @@ export const loginAttempts = sqliteTable("login_attempts", {
 // 記錄「誰在什麼時間存取了哪個資源」,用於偵測「短時間內存取大量不同教授檔案」
 // 這類爬取特徵的行為模式,而非依賴容易被繞過的 IP 層防禦。
 
-export const accessEvents = sqliteTable("access_events", {
+export const accessEvents = pgTable("access_events", {
   id: id(),
   actorKey: text("actor_key").notNull(), // 已登入:userId;未登入:session-less 匿名 key(見 anti-scrape.ts)
   resourceType: text("resource_type").notNull(), // PROFESSOR | POSTING | SUBFIELD
@@ -287,7 +290,7 @@ export const accessEvents = sqliteTable("access_events", {
 
 // ── §8 安全事件與告警(區別於一般業務稽核 auditLogs)──────────
 
-export const securityEvents = sqliteTable("security_events", {
+export const securityEvents = pgTable("security_events", {
   id: id(),
   type: text("type").notNull(), // login.rate_limited | login.locked | enum.detected | honeypot.triggered | authz.denied | integrity.broken | admin.step_up
   severity: text("severity").notNull().default("medium"), // low | medium | high
@@ -301,39 +304,39 @@ export const securityEvents = sqliteTable("security_events", {
 // 只在 §3.3 判定 risk=hard 時才要求驗證,通過後在時效內免重複驗證。
 // verifyToken 只存雜湊,不存明文(與 session token 同慣例)。
 
-export const humanChecks = sqliteTable("human_checks", {
+export const humanChecks = pgTable("human_checks", {
   id: id(),
   actorKey: text("actor_key").notNull(),
   tokenHash: text("token_hash").notNull().unique(),
-  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  expiresAt: ts("expires_at").notNull(),
   createdAt: now("created_at"),
 }, (t) => ({ actorIdx: index("hc_actor").on(t.actorKey) }));
 
 // ── 站內訊息(M4)+ 忙碌/有空狀態 + 分層揭露的站外聯絡方式(§3.2、§5.1)──
 
-export const conversations = sqliteTable("conversations", {
+export const conversations = pgTable("conversations", {
   id: id(),
   contextType: text("context_type").notNull(), // APPLICATION(依附申請)| DIRECT(教授間直接邀約)
   contextId: text("context_id").notNull().default(""), // APPLICATION 時為 applications.id
   // 媒合前每日新對話數有上限(架構書 M4);媒合確認後解除限制,且訊息才可能被要求
   // 揭露聯絡方式。confirmedAt 為 null 代表尚未確認。
-  confirmedAt: integer("confirmed_at", { mode: "timestamp" }),
+  confirmedAt: ts("confirmed_at"),
   createdAt: now("created_at"),
 }, (t) => ({ contextIdx: index("conv_context").on(t.contextType, t.contextId) }));
 
-export const conversationMembers = sqliteTable("conversation_members", {
+export const conversationMembers = pgTable("conversation_members", {
   conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   // 忙碌/有空狀態:雙方各自手動設定,不做系統自動偵測的即時上下線(UX 決策已定案排除)
   status: text("status").notNull().default("available"), // available | away
   statusNote: text("status_note").notNull().default(""),
-  lastReadAt: integer("last_read_at", { mode: "timestamp" }),
+  lastReadAt: ts("last_read_at"),
 }, (t) => ({
   pk: primaryKey({ columns: [t.conversationId, t.userId] }),
   userIdx: index("cm_user").on(t.userId),
 }));
 
-export const messages = sqliteTable("messages", {
+export const messages = pgTable("messages", {
   id: id(),
   conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
   senderId: text("sender_id").notNull().references(() => users.id),
@@ -342,7 +345,7 @@ export const messages = sqliteTable("messages", {
 }, (t) => ({ convTimeIdx: index("msg_conv_time").on(t.conversationId, t.createdAt) }));
 
 // 使用者自己維護的聯絡方式,值一律加密存放(§5.1,見 src/server/crypto.ts)
-export const userContacts = sqliteTable("user_contacts", {
+export const userContacts = pgTable("user_contacts", {
   id: id(),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   kind: text("kind").notNull(), // LINE | WEBSITE | OTHER
@@ -353,7 +356,7 @@ export const userContacts = sqliteTable("user_contacts", {
 // 揭露事件本身即存證(架構書 §3.2「揭露留痕」):誰在哪個對話裡、對誰、揭露了什麼、何時。
 // valueEnc 為揭露當下的值之複本(加密),獨立於 userContacts,避免使用者事後改動原始
 // 聯絡方式導致歷史揭露紀錄跟著變動——存證要反映「揭露當下真正給出去的內容」。
-export const contactDisclosures = sqliteTable("contact_disclosures", {
+export const contactDisclosures = pgTable("contact_disclosures", {
   id: id(),
   conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
   discloserId: text("discloser_id").notNull().references(() => users.id),
@@ -365,23 +368,23 @@ export const contactDisclosures = sqliteTable("contact_disclosures", {
 // ── 帳號血緣(架構書:學士→碩士開新帳號的通則,碩士→博士可專案延用)──────
 // 舊帳號內容完全不動,只多一條指向新帳號的關聯;isVisible 控制是否公開可查詢。
 
-export const accountLineage = sqliteTable("account_lineage", {
+export const accountLineage = pgTable("account_lineage", {
   id: id(),
   fromAccountId: text("from_account_id").notNull().references(() => users.id),
   toAccountId: text("to_account_id").notNull().references(() => users.id),
   linkType: text("link_type").notNull(), // bachelor_to_master | master_to_phd_new | master_to_phd_continued
-  isVisible: integer("is_visible", { mode: "boolean" }).notNull().default(true),
+  isVisible: boolean("is_visible").notNull().default(true),
   createdAt: now("created_at"),
 }, (t) => ({ fromIdx: index("al_from").on(t.fromAccountId), toIdx: index("al_to").on(t.toAccountId) }));
 
 // ── 教授帳號交接(架構書:放棄帳號需 30–90 天前申請,通知利益相關人)────────
 
-export const professorRelinquishments = sqliteTable("professor_relinquishments", {
+export const professorRelinquishments = pgTable("professor_relinquishments", {
   id: id(),
   professorId: text("professor_id").notNull().references(() => professorProfiles.id),
   initiatedById: text("initiated_by_id").notNull().references(() => users.id),
   reason: text("reason").notNull().default(""),
-  relinquishAt: integer("relinquish_at", { mode: "timestamp" }).notNull(), // 至少 30 天後
+  relinquishAt: ts("relinquish_at").notNull(), // 至少 30 天後
   status: text("status").notNull().default("pending"), // pending | completed | cancelled
   createdAt: now("created_at"),
 }, (t) => ({ statusIdx: index("pr_status").on(t.status, t.relinquishAt) }));
@@ -389,30 +392,30 @@ export const professorRelinquishments = sqliteTable("professor_relinquishments",
 // ── M7 面試時段預約 + ics 行事曆同步 ──────────────────────
 // 地點資訊為「媒合後才揭露」等級,僅對已預約該時段的申請人顯示(見 repository 層)。
 
-export const interviewSlots = sqliteTable("interview_slots", {
+export const interviewSlots = pgTable("interview_slots", {
   id: id(),
   postingId: text("posting_id").notNull().references(() => postings.id, { onDelete: "cascade" }),
   professorId: text("professor_id").notNull().references(() => professorProfiles.id),
-  startAt: integer("start_at", { mode: "timestamp" }).notNull(),
-  endAt: integer("end_at", { mode: "timestamp" }).notNull(),
+  startAt: ts("start_at").notNull(),
+  endAt: ts("end_at").notNull(),
   location: text("location").notNull().default(""),
-  isBooked: integer("is_booked", { mode: "boolean" }).notNull().default(false),
+  isBooked: boolean("is_booked").notNull().default(false),
   applicationId: text("application_id").references(() => applications.id),
   createdAt: now("created_at"),
 }, (t) => ({ postingIdx: index("is_posting").on(t.postingId, t.isBooked) }));
 
 // ics 行事曆訂閱 token:90–180 天到期(架構規格 §7 已定案),只存雜湊。
-export const icsTokens = sqliteTable("ics_tokens", {
+export const icsTokens = pgTable("ics_tokens", {
   id: id(),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   tokenHash: text("token_hash").notNull().unique(),
-  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  expiresAt: ts("expires_at").notNull(),
   createdAt: now("created_at"),
 }, (t) => ({ userIdx: index("ics_user").on(t.userId) }));
 
 // ── M8 教授實驗室/計畫團隊群組(貼文一律不可公開)────────────
 
-export const groups = sqliteTable("groups", {
+export const groups = pgTable("groups", {
   id: id(),
   ownerId: text("owner_id").notNull().references(() => users.id),
   name: text("name").notNull(),
@@ -420,14 +423,14 @@ export const groups = sqliteTable("groups", {
   createdAt: now("created_at"),
 });
 
-export const groupMembers = sqliteTable("group_members", {
+export const groupMembers = pgTable("group_members", {
   groupId: text("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   role: text("role").notNull().default("member"), // owner | member
   joinedAt: now("joined_at"),
 }, (t) => ({ pk: primaryKey({ columns: [t.groupId, t.userId] }), userIdx: index("gm_user").on(t.userId) }));
 
-export const groupPosts = sqliteTable("group_posts", {
+export const groupPosts = pgTable("group_posts", {
   id: id(),
   groupId: text("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
   authorId: text("author_id").notNull().references(() => users.id),
@@ -436,11 +439,10 @@ export const groupPosts = sqliteTable("group_posts", {
 }, (t) => ({ groupIdx: index("gp_group").on(t.groupId, t.createdAt) }));
 
 // ── §6 檔案上傳安全 ────────────────────────────────────────
-// 目前唯一使用情境:學生於申請時可附上履歷/研究草稿。storagePath 指向伺服器本機的
-// 私有儲存目錄(非 public/,不可直接以固定網址存取),正式環境換成雲端物件儲存時,
-// 只需改 src/server/storage.ts 的實作,本表結構不需變動。
+// 目前實作:storedFilename 存放 Vercel Blob 回傳的私有 blob 網址(見 src/server/storage.ts),
+// 非本機路徑。欄位名稱沿用舊名(storedFilename)以縮小改動範圍,語意改為「儲存端識別碼」。
 
-export const attachments = sqliteTable("attachments", {
+export const attachments = pgTable("attachments", {
   id: id(),
   ownerId: text("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   applicationId: text("application_id").references(() => applications.id, { onDelete: "cascade" }),
@@ -456,8 +458,8 @@ export const attachments = sqliteTable("attachments", {
   createdAt: now("created_at"),
   // 白皮書 2.7.2:群組共用檔案「單檔僅保留一個月,到期前一週提醒」。僅群組檔案
   // (groupId 非 null)會設定這兩欄;申請附件(applicationId)不設到期,維持原行為。
-  expiresAt: integer("expires_at", { mode: "timestamp" }),
-  expiryRemindedAt: integer("expiry_reminded_at", { mode: "timestamp" }), // 已提醒過,避免重複提醒
+  expiresAt: ts("expires_at"),
+  expiryRemindedAt: ts("expiry_reminded_at"), // 已提醒過,避免重複提醒
 }, (t) => ({
   ownerIdx: index("att_owner").on(t.ownerId),
   appIdx: index("att_app").on(t.applicationId),
@@ -465,7 +467,7 @@ export const attachments = sqliteTable("attachments", {
 }));
 
 // 白皮書 2.12.2 使用者隱藏(靜音,非阻斷):單向、不對稱、被隱藏方不知情。
-export const userHides = sqliteTable("user_hides", {
+export const userHides = pgTable("user_hides", {
   id: id(),
   hiderUserId: text("hider_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   hiddenUserId: text("hidden_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -479,25 +481,25 @@ export const userHides = sqliteTable("user_hides", {
 // 白皮書 2.13 資料匯出:比照 icsTokens 的一次性連結慣例(只存雜湊、有效期、可查詢是否已領取)。
 // 未實作原文提到的「匯出時另設密碼保護壓縮檔」——原文自己在該密碼是否可更改留了問號、
 // 屬未定案細節,本輪簡化為「連結本身即為時效存取憑證」,已在交付文件中誠實註明此簡化。
-export const dataExportTokens = sqliteTable("data_export_tokens", {
+export const dataExportTokens = pgTable("data_export_tokens", {
   id: id(),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   tokenHash: text("token_hash").notNull().unique(),
-  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
-  downloadedAt: integer("downloaded_at", { mode: "timestamp" }),
+  expiresAt: ts("expires_at").notNull(),
+  downloadedAt: ts("downloaded_at"),
   createdAt: now("created_at"),
 }, (t) => ({ userIdx: index("det_user").on(t.userId) }));
 
 // 時效簽名下載連結(§5.2 呼應,不給永久公開網址)。tokenHash 只存雜湊,與 session 同慣例。
-export const fileDownloadTokens = sqliteTable("file_download_tokens", {
+export const fileDownloadTokens = pgTable("file_download_tokens", {
   id: id(),
   attachmentId: text("attachment_id").notNull().references(() => attachments.id, { onDelete: "cascade" }),
   tokenHash: text("token_hash").notNull().unique(),
-  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  expiresAt: ts("expires_at").notNull(),
   createdAt: now("created_at"),
 }, (t) => ({ attIdx: index("fdt_att").on(t.attachmentId) }));
 
-export const dualApprovals = sqliteTable("dual_approvals", {
+export const dualApprovals = pgTable("dual_approvals", {
   id: id(),
   requesterId: text("requester_id").notNull().references(() => users.id),
   action: text("action").notNull(), // 欲執行的動作代碼,如 conversation.view_messages
@@ -505,8 +507,8 @@ export const dualApprovals = sqliteTable("dual_approvals", {
   targetId: text("target_id").notNull().default(""),
   status: text("status").notNull().default("pending"), // pending | approved | rejected | expired
   approverId: text("approver_id").references(() => users.id),
-  approvedAt: integer("approved_at", { mode: "timestamp" }), // 核可當下時間,存取時效窗口以此起算
-  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(), // 「待核可」本身的過期時間(逾時未核可自動失效)
+  approvedAt: ts("approved_at"), // 核可當下時間,存取時效窗口以此起算
+  expiresAt: ts("expires_at").notNull(), // 「待核可」本身的過期時間(逾時未核可自動失效)
   createdAt: now("created_at"),
 }, (t) => ({ statusIdx: index("da_status").on(t.status, t.createdAt) }));
 
@@ -516,11 +518,11 @@ export const dualApprovals = sqliteTable("dual_approvals", {
 // REC(撰寫推薦信)| UR(指導大專生研究計畫)| LAB_JOIN(加入實驗室/指導畢業專題)|
 // EXT_ENDORSE(擔任校外計畫指導教授)| COLLAB_GUIDE(指導學生合作專案——本項僅存開關,
 // 實際請求流程要等白皮書 2.6 學生合作專區模組上線才會有出口,屬誠實的範圍界定,非遺漏)
-export const professorIntakeSettings = sqliteTable("professor_intake_settings", {
+export const professorIntakeSettings = pgTable("professor_intake_settings", {
   id: id(),
   professorId: text("professor_id").notNull().references(() => professorProfiles.id, { onDelete: "cascade" }),
   type: text("type").notNull(), // REC | UR | LAB_JOIN | EXT_ENDORSE | COLLAB_GUIDE
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+  enabled: boolean("enabled").notNull().default(false),
   conditionText: text("condition_text").notNull().default(""), // 教授自訂條件文字,如「修過我的課且成績 B+ 以上」
   quotaNote: text("quota_note").notNull().default(""), // 教授自行填寫的名額描述,如「每學期 2 封(已撰寫 1 封)」;白皮書明定為教授自填,非系統計數
   updatedAt: now("updated_at"),
@@ -538,7 +540,7 @@ export const professorIntakeSettings = sqliteTable("professor_intake_settings", 
 //   pending ─────────────────┼→ accepted ─(僅 REC)→ writing → sent
 //                             │                              └→ declined_after_accept
 //                             └→ declined
-export const studentRequests = sqliteTable("student_requests", {
+export const studentRequests = pgTable("student_requests", {
   id: id(),
   type: text("type").notNull(), // REC | UR | LAB_JOIN | EXT_ENDORSE
   studentId: text("student_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -546,7 +548,7 @@ export const studentRequests = sqliteTable("student_requests", {
   status: text("status").notNull().default("pending"),
   payload: text("payload").notNull().default("{}"), // 類別專屬欄位(JSON),如 REC 的目的/截止日/主旨
   createdAt: now("created_at"),
-  statusUpdatedAt: integer("status_updated_at", { mode: "timestamp" }),
+  statusUpdatedAt: ts("status_updated_at"),
 }, (t) => ({
   profStatusIdx: index("sr_prof_status").on(t.professorId, t.status),
   studentIdx: index("sr_student").on(t.studentId, t.createdAt),

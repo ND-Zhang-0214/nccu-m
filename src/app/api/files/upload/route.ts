@@ -90,7 +90,7 @@ export async function POST(req: Request) {
 
   // §6 + 負載測試修正:配額檢查與寫入包在同一原子交易,高併發下不會被繞過
   // (見 attachments.ts 的 createAttachmentIfUnderQuota 註解)。
-  const result = createAttachmentIfUnderQuota({
+  const result = await createAttachmentIfUnderQuota({
     ownerId: user.id, applicationId: appId, groupId: gId,
     originalName: (file.name || "file").slice(0, 200), // 只作顯示用,不做為儲存路徑
     storedFilename, mimeType: detected.mime, sizeBytes: buf.length, scanStatus: "clean", expiresAt,

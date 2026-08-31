@@ -11,7 +11,7 @@ import { SESSION_COOKIE_NAME } from "@/server/session-cookie";
 
 // session cookie 名稱獨立在 session-cookie.ts:middleware.ts(Edge runtime)需要讀同一個
 // cookie 名稱做粗篩,但不能 import 這支檔案本身(頂層 import 了 db client,db client 底層
-// 是 better-sqlite3,原生 Node 模組無法在 Edge runtime 打包),故拆出這支不含任何
+// 是 pg,用到 Node.js 原生 TCP/TLS socket,無法在 Edge runtime 打包),故拆出這支不含任何
 // db/Node-only 依賴的極小檔案,兩邊各自 import,避免兩處各寫一份字串常數而漂移。
 const COOKIE = SESSION_COOKIE_NAME;
 const SESSION_DAYS = 14;       // §2.4 絕對逾時
